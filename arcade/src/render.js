@@ -16,13 +16,20 @@ let lastRailSig = "";
 let getFocusedSnapshot = () => null;
 export function setFocusedSnapshotGetter(fn) { getFocusedSnapshot = fn; }
 
+// Whether a terminal surface (peek/sync/shell) is up — supplied by main.js from the
+// terminal actor. When true the terminal owns the screen (replaces the agent menu).
+let isTerminalUp = () => false;
+export function setTerminalUpGetter(fn) { isTerminalUp = fn; }
+
 function railOf(ctx) { return buildRail(ctx.agents, ctx.groups, ctx.filterSystemId); }
 
 export function draw(snapshot) {
   const ctx = snapshot.context;
   const mode = snapshot.matches("agent") ? "agent" : "rail";
-  // Phase 0004: the terminal view is a 0006 surface — never up yet.
-  const inTerm = false;
+  // Phase 0006: the terminal view is its OWN top-level surface (peek/sync/shell). When
+  // up it replaces the agent menu and owns the whole screen (terminal.renderTerm paints
+  // the inside; here we just route the container visibility). Only meaningful in agent mode.
+  const inTerm = mode === "agent" && isTerminalUp();
   // 0 agents after the first load → the welcome orb owns the screen (gated on
   // `loaded` so it can't flash on boot).
   const welcome = ctx.loaded && mode === "rail" && !ctx.agents.length;

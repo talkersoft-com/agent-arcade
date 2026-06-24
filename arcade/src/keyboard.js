@@ -10,6 +10,13 @@ import {
   toggleDictation, cancelDictation, commitForNavigation,
   isRecording, recordingAgentId, isDictationAvailable, recordingNav,
 } from "./dictation.js";
+import {
+  toggleTerm, openTerm, closeTerm, switchTerminalInView, interruptPane, sendTermInput,
+  pageInPane, enterSync, exitSync, syncSend, keyEventToBytes, enterShell, exitShell,
+  toggleCompose, terminalUp, inSyncMode, inShellMode, inComposeMode,
+  isMacroPickerOpen, macroPickerState, cancelMacroPicker, mpMove, mpAdvance,
+  startMacro, resolveMacro,
+} from "./terminal.js";
 
 // `api` is supplied by main.js: { send, focusedActor, focusedAgent, isMode, ctx }.
 export function wireKeyboard(api) {
@@ -55,8 +62,23 @@ function onKeydown(e, api) {
     return;
   }
 
-  // Held-key guard (matches the reference: allow held nav arrows only).
-  if (e.repeat && !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) return;
+  // ── MACRO PICKER (Phase 0006): owns all keys while open (text args keep cursor
+  // arrows). Placed before everything else, mirroring the reference. ──
+  if (isMacroPickerOpen()) {
+    const mp = macroPickerState();
+    const arg = mp && mp.phase === "arg" ? mp.cmd.args[mp.ai] : null;
+    const isText = !!arg && arg.type === "text";
+    const isFlag = !!arg && arg.type === "flag";
+    if (e.key === "Escape") { e.preventDefault(); cancelMacroPicker(); return; }
+    if (e.key === "Enter") { e.preventDefault(); mpAdvance(); return; }
+    if (!isText && (e.key === "ArrowUp" || e.key === "ArrowDown")) { e.preventDefault(); mpMove(e.key === "ArrowUp" ? -1 : 1); return; }
+    if (isFlag && (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === " ")) { e.preventDefault(); mpMove(1); return; }
+    return;
+  }
+
+  // Held-key guard (matches the reference: allow held nav arrows only — but ALL keys
+  // repeat in sync/shell, where every keystroke is forwarded raw to the pane/PTY).
+  if (e.repeat && !inSyncMode() && !inShellMode() && !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown"].includes(e.key)) return;
 
   // ── AGENT view ──
   if (api.isMode("agent")) {
@@ -64,28 +86,88 @@ function onKeydown(e, api) {
     const inserting = actor && actor.getSnapshot().context.view === "insert";
 
     // INSERT (type box): textarea owns typing; we only intercept Enter (send) / Esc
-    // (cancel). The 'input' listener keeps the draft actor in sync as you type.
+    // (cancel). The 'input' listener keeps the draft actor in sync as you type. (Type
+    // box and terminal are mutually exclusive — terminalUp() is false here.)
     if (inserting) {
       if (e.key === "Escape") { e.preventDefault(); cancelInsert(api); }
       else if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendTyped(api); }
       return;
     }
 
-    // ── dictation (⌘D toggle) / watch (⌘P) ──
+    // ── dictation (⌘D toggle) / watch (⌘P) ── carved out FIRST so the chord works
+    // even inside sync (every other key still reaches the pane). ⌘ only (not Ctrl) so
+    // Ctrl+D stays a real EOF in sync.
     if (isDictationAvailable() && e.metaKey && (e.key === "d" || e.key === "D")) { e.preventDefault(); toggleDictation(); return; }
     if (e.metaKey && (e.key === "p" || e.key === "P")) { e.preventDefault(); stubWatch(); return; }
 
+    // ── WORKSPACE SHELL: xterm's textarea owns every keystroke. Only ⌘A (the ONLY way
+    // out) is carved out here; Esc comes via the menu accelerator (handleEscape →
+    // exitShell). Everything else hands off to xterm. ──
+    if (inShellMode()) {
+      if (e.metaKey && (e.key === "a" || e.key === "A")) { e.preventDefault(); exitShell(); return; }
+      return;
+    }
+
+    // ── SYNC mode: every key (incl. Esc) → the pane raw; ⌘A exits; selection-aware ⌘C. ──
+    if (inSyncMode()) {
+      if (e.metaKey && (e.key === "a" || e.key === "A")) { e.preventDefault(); exitSync(); return; }
+      if (e.metaKey && (e.key === "c" || e.key === "C") && String(window.getSelection() || "").trim()) return; // real copy
+      const bytes = keyEventToBytes(e);
+      if (bytes != null) { e.preventDefault(); syncSend(bytes); }
+      return;
+    }
+
+    // ── TERMINAL PEEK: prompt input focused. Enter sends, ^C interrupts, ⌘F sync,
+    // ⌘W shell, ⌘E compose, PgUp/PgDn scroll, ⌘←/→ switch terminal, Esc closes. ──
+    if (terminalUp()) {
+      if (e.metaKey && e.key === "ArrowLeft") { e.preventDefault(); navTerminal(api, -1); return; }
+      if (e.metaKey && e.key === "ArrowRight") { e.preventDefault(); navTerminal(api, 1); return; }
+      if (e.metaKey && (e.key === "w" || e.key === "W")) { e.preventDefault(); enterShell(); return; }
+      if (e.ctrlKey && (e.key === "c" || e.key === "C")) { e.preventDefault(); interruptPane(); return; }
+      if ((e.metaKey || e.ctrlKey) && (e.key === "f" || e.key === "F")) { e.preventDefault(); enterSync(); return; }
+      if ((e.metaKey || e.ctrlKey) && (e.key === "e" || e.key === "E")) { e.preventDefault(); toggleCompose(); return; }
+      if (e.key === "Enter") {
+        const compose = inComposeMode();
+        const sendCombo = compose ? (e.metaKey || e.ctrlKey) : !e.shiftKey;
+        if (sendCombo) {
+          // @-command: a clean "@name" on the first line opens the picker instead of sending.
+          const ta = $("av-term-input");
+          const tok = ((((ta && ta.value) || "").split("\n")[0] || "").trim().match(/^@([\w-]+)$/) || [])[1];
+          const agent = api.focusedAgent();
+          if (tok && agent) {
+            e.preventDefault();
+            const cmd = resolveMacro(agent.id, tok);
+            if (cmd) { if (ta) ta.value = ""; if (compose) toggleCompose(false); startMacro(cmd.name); }
+            else setAvMsg(`no @command “${tok}”`, true);
+            return;
+          }
+        }
+        if (compose) {
+          if (e.metaKey || e.ctrlKey) { e.preventDefault(); sendTermInput(); toggleCompose(false); }
+          /* plain Enter (and Shift+Enter) = newline */
+        } else if (!e.shiftKey) { e.preventDefault(); sendTermInput(); }
+        return;
+      }
+      if (e.key === "Escape") { e.preventDefault(); if (inComposeMode()) toggleCompose(false); else closeTerm(); return; }
+      if (!inComposeMode()) {
+        if (e.key === "PageUp") { e.preventDefault(); pageInPane("pageup"); return; }
+        if (e.key === "PageDown") { e.preventDefault(); pageInPane("pagedown"); return; }
+      }
+      return; // everything else types into the prompt textarea
+    }
+
+    // ── AGENT MENU (no terminal up) ──
     // ⌘←/→ switch agent (deliberate gesture; bare arrows are inert on the menu). When a
     // recording is in flight, route through the recordingNavBehavior gate first.
     if (e.metaKey && e.key === "ArrowLeft") { e.preventDefault(); navAgent(api, -1); return; }
     if (e.metaKey && e.key === "ArrowRight") { e.preventDefault(); navAgent(api, 1); return; }
 
-    // ^C interrupt — STUBBED for Phase 0006 (terminal/pane).
-    if (e.ctrlKey && (e.key === "c" || e.key === "C")) { e.preventDefault(); stubInterrupt(); return; }
+    // ^C interrupt — send Esc into the agent's pane (works from the menu too).
+    if (e.ctrlKey && (e.key === "c" || e.key === "C")) { e.preventDefault(); interruptPane(); return; }
 
     switch (e.key) {
       case "i": case "I": e.preventDefault(); if (!isRecording()) startInsert(api); break;  // typing within the agent
-      case "t": case "T": e.preventDefault(); stubTerminal(); break;   // Phase 0006
+      case "t": case "T": e.preventDefault(); toggleTerm(); break;     // open the live terminal peek
       // Esc → cancel a live recording (discard) FIRST; otherwise back to rail.
       case "Escape": if (isRecording()) { cancelDictation(); } else { api.send({ type: "EXIT_TO_RAIL" }); } break;
     }
@@ -122,6 +204,21 @@ async function navAgent(api, dir) {
     if (name) bus.emit("toast", { text: "Sent to " + name, kind: "info" });
   }
   api.send({ type: "SWITCH_AGENT", dir });
+}
+
+// ⌘←/→ from the TERMINAL peek: switch the focused agent (root machine) AND keep the
+// peek up on the new agent (re-point + ensure its pane is live). Mirrors the
+// reference's switchTerminalInView — staying in the terminal, not the menu.
+async function navTerminal(api, dir) {
+  if (isRecording()) {
+    if (recordingNav() === "lock") { lockedToast(); return; }
+    const name = await commitForNavigation();
+    if (name) bus.emit("toast", { text: "Sent to " + name, kind: "info" });
+  }
+  const before = api.focusedAgent();
+  api.send({ type: "SWITCH_AGENT", dir });   // root machine moves focus (guarded; no-op at an end)
+  const after = api.focusedAgent();
+  if (after && (!before || after.id !== before.id)) switchTerminalInView(dir); // re-open peek only if focus moved
 }
 
 // Rail Enter: entering an agent moves focus to another agent (or the same one). If a
@@ -179,12 +276,23 @@ function requestExit() {
 }
 
 // ── Esc handler (single source of truth; routed from the menu accelerator) ──
+// macOS eats Esc for the fullscreen window, so main routes it via a menu accelerator.
+// Precedence mirrors the reference's handleEscape().
 function handleEscape(api) {
-  // Esc cancels a live recording FIRST (discard — the ONLY discard path), staying put.
+  // Macro picker first — Esc cancels it.
+  if (isMacroPickerOpen()) { cancelMacroPicker(); return; }
+  // Esc cancels a live recording (discard — the ONLY discard path), staying put.
   if (isRecording()) { cancelDictation(); return; }
   if (api.isMode("agent")) {
     const actor = api.focusedActor();
     if (actor && actor.getSnapshot().context.view === "insert") { cancelInsert(api); return; }
+    // WORKSPACE SHELL: Esc belongs to the SHELL (forward to the PTY) — the only way out
+    // is ⌘A / ⌘W, never Esc.
+    if (inShellMode()) { const a = api.focusedAgent(); if (a && window.arcade && window.arcade.shellInput) window.arcade.shellInput(a.id, "\x1b"); return; }
+    // SYNC: Esc belongs to the pane (like the shell); ⌘A exits sync.
+    if (inSyncMode()) { syncSend("\x1b"); return; }
+    // TERMINAL PEEK: compose → collapse; else close the terminal back to the menu.
+    if (terminalUp()) { if (inComposeMode()) toggleCompose(false); else closeTerm(); return; }
     api.send({ type: "EXIT_TO_RAIL" });
     return;
   }
@@ -193,7 +301,5 @@ function handleEscape(api) {
 
 function setAvMsg(t, err) { const m = $("av-msg"); if (m) { m.textContent = t || ""; m.style.color = err ? "#e5484d" : "#9aa4b2"; } }
 
-// ── stubs for later phases (routing exists; behavior lands in 0005/0006) ──
+// ── stub for a later phase (routing exists; behavior lands later) ──
 function stubWatch() { /* Phase 0005+ — ⌘P watch window pop-out (capture lands first) */ }
-function stubTerminal() { bus.emit("toast", { text: "The terminal arrives in the next phase.", kind: "info" }); } // Phase 0006 (t)
-function stubInterrupt() { /* Phase 0006 — ^C interrupt pane */ }

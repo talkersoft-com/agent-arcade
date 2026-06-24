@@ -14,17 +14,32 @@
 // the actor is spawned once and kept in the root's context map for the session.
 import { createActor } from "xstate";
 import { arcadeMachine } from "./machines/arcadeMachine.js";
+import { terminalMachine } from "./machines/terminalActor.js";
 import { applyNotch } from "./dom.js";
-import { draw, setFocusedSnapshotGetter } from "./render.js";
+import { draw, setFocusedSnapshotGetter, setTerminalUpGetter } from "./render.js";
 import { wireKeyboard } from "./keyboard.js";
 import { wireToasts } from "./toast.js";
 import { wireIpc, startDataLoop } from "./ipc.js";
 import { setDictationHost, setDictationAvailable, applyDictationSettings } from "./dictation.js";
+import {
+  setTerminalHost, setTerminalActor, wireTerminal, renderTerm,
+  terminalUp, shellDataWriter, shellExitWriter, setComposeSplit,
+} from "./terminal.js";
 
 function boot() {
   applyNotch();
 
   const arcade = createActor(arcadeMachine);
+
+  // ── terminal region actor (Phase 0006) ──
+  // ONE actor for the session, owning the terminal lifecycle (closed → peek → sync →
+  // shell + the compose flag). The shell-push writers are PROVIDED here so the single
+  // IPC translate site → SHELL.DATA/SHELL.EXIT events drive the machine, and the
+  // machine's actions write to the live xterm (see terminal.js).
+  const termActor = createActor(terminalMachine.provide({
+    actions: { onShellData: ({ event }) => shellDataWriter(event), onShellExit: ({ event }) => shellExitWriter(event) },
+  }));
+  setTerminalActor(termActor);
 
   // ── focused per-agent actor tracking ──
   // We re-subscribe the render layer to whichever agent actor is currently focused, so
@@ -52,11 +67,20 @@ function boot() {
   }
 
   // Root subscription: redraw on every transition, and keep the focused-actor
-  // subscription in step.
+  // subscription in step. When a terminal surface is up, also repaint its inside.
   arcade.subscribe((snap) => {
     syncFocusSubscription();
     draw(snap);
+    if (terminalUp()) renderTerm();
   });
+
+  // render.js asks the terminal actor "is a terminal surface up?" to route the
+  // top-level container visibility (terminal replaces the agent menu).
+  setTerminalUpGetter(() => terminalUp());
+
+  // Terminal-actor subscription: any terminal transition repaints the root containers
+  // (so agent-menu ⇄ terminal-view visibility flips) AND the terminal's own inside.
+  termActor.subscribe(() => { draw(arcade.getSnapshot()); if (terminalUp()) renderTerm(); });
 
   // ── keyboard API surface (decouples keyboard.js from machine internals) ──
   const api = {
@@ -89,18 +113,36 @@ function boot() {
     },
   });
 
+  // ── terminal host bridge ──
+  // Lets the terminal controller reach the root machine: the focused agent (to scrape /
+  // shell / macro against), the @-command list, and a send() into the root machine (for
+  // ⌘←/→ agent switching from the terminal peek).
+  setTerminalHost({
+    focusedAgent: () => api.focusedAgent(),
+    commands: () => arcade.getSnapshot().context.commands,
+    send: (e) => arcade.send(e),
+  });
+
   wireToasts();
+  wireTerminal();          // macro-bar / prompt click + input handlers (Phase 0006)
   wireKeyboard(api);
   wireIpc((e) => arcade.send(e));
 
   arcade.start();
+  termActor.start();
   startDataLoop((e) => arcade.send(e));
 
   // Seed dictation availability + timing/recordingNavBehavior from cached state, then
   // keep them live (onDictation push handled in the IPC seam; settings re-read on focus).
   (async () => {
     try { if (window.arcade && window.arcade.dictationGet) setDictationAvailable(await window.arcade.dictationGet()); } catch {}
-    try { if (window.arcade && window.arcade.settings) applyDictationSettings(await window.arcade.settings()); } catch {}
+    try {
+      if (window.arcade && window.arcade.settings) {
+        const st = await window.arcade.settings();
+        applyDictationSettings(st);
+        if (st && Number.isFinite(st.compose_split)) setComposeSplit(st.compose_split);
+      }
+    } catch {}
   })();
   window.addEventListener("focus", async () => {
     try { if (window.arcade && window.arcade.settings) applyDictationSettings(await window.arcade.settings()); } catch {}
