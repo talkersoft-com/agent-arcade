@@ -1,0 +1,82 @@
+name: Publish package
+
+# Publishes the Studio frontend as a scoped npm package to GitHub Packages, INCLUDING
+# the app's own Go bridge binaries (dictation-go + wezterm-bridge) that the Electron
+# app sits on top of. After `npm install -g @talkersoft-com/agent-arcade-studio` you
+# get a global `agent-arcade` command.
+#
+# Triggered when you publish a GitHub Release; the release tag must match the version
+# in package.json or the run fails. Also runnable manually (workflow_dispatch).
+on:
+  release:
+    types: [published]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write # GITHUB_TOKEN needs this to push to GitHub Packages
+
+jobs:
+  publish:
+    # macOS runner: the Go bridges build with CGO and are ad-hoc codesigned, so the
+    # binaries shipped in the package are macOS/arm64 (the Electron app is macOS-only).
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@talkersoft-com"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+
+      # Gate: package.json version MUST equal the release tag (minus any leading "v").
+      - name: Verify package.json version matches the release tag
+        if: github.event_name == 'release'
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "package.json version: $PKG_VERSION"
+          echo "release tag version:  $TAG_VERSION"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::package.json version ($PKG_VERSION) does not match release tag ($TAG_VERSION). Bump package.json to match the tag, then re-release."
+            exit 1
+          fi
+
+      # Build the app's Go bridges. These are gitignored build artifacts, included in
+      # the package via package.json "files" (which overrides .gitignore for publish).
+      - name: Build Go bridges (dictation-go + wezterm-bridge)
+        run: npm run build
+
+      - name: Verify the Go binaries are present
+        run: |
+          test -x go/bin/dictation-go || { echo "::error::go/bin/dictation-go missing"; exit 1; }
+          test -x wezterm-bridge/bin/wezterm-bridge || { echo "::error::wezterm-bridge/bin/wezterm-bridge missing"; exit 1; }
+          echo "✓ Go binaries built and present"
+
+      # Bundle the official, notarized, universal WezTerm.app so a fresh
+      # `npm i -g` drives WezTerm with nothing else installed. We download a PINNED
+      # release of wez/wezterm (MIT, © Wez Furlong — credited in Settings → General),
+      # verify its published SHA-256, and unpack WezTerm.app into vendor/wezterm/.
+      # Nothing is committed to git: vendor/wezterm/ is gitignored and packed into the
+      # tarball via package.json "files" (same pattern as the Go bridges). Bump
+      # WEZTERM_TAG to upgrade — the build is deterministic for a given tag.
+      # Same script dev runs (package.json "vendor:wezterm"), so CI and local
+      # launches drive the identical pinned WezTerm. Bump the tag in the script.
+      - name: Bundle WezTerm (official release)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/fetch-wezterm.sh
+
+      # Sanity: list exactly what will be published (should include go/bin + bin/).
+      - name: Preview package contents
+        run: npm pack --dry-run
+
+      - name: Publish to GitHub Packages
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

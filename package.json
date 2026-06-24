@@ -1,0 +1,72 @@
+{
+  "name": "@talkersoft-com/agent-arcade",
+  "version": "0.1.0",
+  "description": "Agent Arcade — voice-driven control for your AI agents (Electron UI + Go API bridge over NDJSON).",
+  "author": "talkersoft",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/talkersoft-com/agent-arcade.git"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "files": [
+    "main.js",
+    "preload.js",
+    "renderer/**",
+    "arcade/**",
+    "launcher/**",
+    "assets/**",
+    "wezterm/**",
+    "scripts/**",
+    "build/**",
+    "bin/**",
+    "go/bin/**",
+    "wezterm-bridge/bin/**",
+    "vendor/wezterm/**",
+    "studio/dist/**",
+    "arcade/dist/**"
+  ],
+  "main": "main.js",
+  "bin": {
+    "agent-arcade": "bin/agent-arcade.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/fix-node-pty.js",
+    "build:js": "node scripts/build-js.mjs",
+    "build:go": "cd go && go mod tidy && CGO_ENABLED=1 go build -ldflags=-linkmode=external -o bin/dictation-go . && codesign -f -s - bin/dictation-go",
+    "build:wezterm": "cd wezterm-bridge && CGO_ENABLED=1 go build -ldflags=-linkmode=external -o bin/wezterm-bridge . && codesign -f -s - bin/wezterm-bridge",
+    "vendor:wezterm": "bash scripts/fetch-wezterm.sh",
+    "build": "npm run build:js && npm run vendor:wezterm && npm run build:go && npm run build:wezterm",
+    "icon": "bash build/make_icon.sh",
+    "test": "electron test/popout-diag.js",
+    "kill:prod": "node scripts/relaunch.js prod",
+    "kill:dev": "node scripts/relaunch.js dev",
+    "start": "npm run kill:prod && npm run build && env -u DICTATE_DEV electron . --launcher",
+    "start:nobuild": "npm run kill:prod && env -u DICTATE_DEV electron . --launcher",
+    "prod": "npm run kill:prod && npm run build && env -u DICTATE_DEV electron . --launcher",
+    "prod:nobuild": "npm run kill:prod && env -u DICTATE_DEV electron . --launcher",
+    "dev": "npm run kill:dev && npm run build && DICTATE_DEV=1 electron . --launcher",
+    "dev:nobuild": "npm run kill:dev && DICTATE_DEV=1 electron . --launcher",
+    "backend": "bash scripts/backend.sh",
+    "arcade": "npm run build && electron . --arcade",
+    "arcade:nobuild": "electron . --arcade"
+  },
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "electron-reloader": "^1.2.3",
+    "esbuild": "^0.28.1"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "electron": "^32.0.0",
+    "js-yaml": "^4.2.0",
+    "mitt": "^3.0.1",
+    "node-pty": "^1.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "xstate": "^5.18.2",
+    "zustand": "^5.0.0"
+  }
+}
