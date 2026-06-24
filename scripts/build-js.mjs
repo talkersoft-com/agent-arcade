@@ -24,7 +24,10 @@ await Promise.all([
     ...common,
     entryPoints: [resolve(root, "studio/src/main.jsx")],
     outfile: resolve(root, "studio/dist/studio.js"),
-    loader: { ".js": "jsx", ".jsx": "jsx" },
+    // `.css` → text: the stylesheet is imported as a string and injected as a
+    // <style> tag at runtime (renderer/index.html only loads studio.js). Keeps the
+    // single-bundle contract while reusing the reference's CSS verbatim.
+    loader: { ".js": "jsx", ".jsx": "jsx", ".css": "text" },
     jsx: "automatic",
     define: {
       "process.env.NODE_ENV": JSON.stringify(prod ? "production" : "development"),
