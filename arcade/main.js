@@ -119,6 +119,11 @@ function loadApp() {
     compose_split: clampSplit(a.compose_split),
     dictation_tail_ms: clampInt(a.dictation_tail_ms, 0, 1500, 250),
     dictation_pad_ms: clampInt(a.dictation_pad_ms, 0, 1000, 200),
+    // recordingNavBehavior (Phase 0005): what navigating away DURING a recording does.
+    // "send" (default) = commit dictation to the original agent, then navigate.
+    // "lock"           = block navigation while recording. Optional, additive field;
+    // configs without it keep the "send" default. (No Studio UI yet — hand-editable.)
+    recordingNavBehavior: a.recordingNavBehavior === "lock" ? "lock" : "send",
   };
 }
 function loadWezterm() {
