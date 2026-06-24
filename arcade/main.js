@@ -481,7 +481,14 @@ function spawnGo() {
 function writeGo(o) { if (go && !go.killed) go.stdin.write(JSON.stringify(o) + "\n"); }
 function runWez(args) {
   return new Promise((res, rej) => execFile(WEZ_BRIDGE, args, { env: weztermEnv(), maxBuffer: 4 << 20 },
-    (e, so, se) => e ? rej(new Error((se || "").toString().trim() || e.message)) : res((so || "").toString())));
+    (e, so, se) => {
+      if (!e) return res((so || "").toString());
+      // Surface the bridge's non-zero EXIT CODE alongside its stderr so a caller's
+      // {ok:false,error} can carry it (1 = failure, 2 = bad usage). .message unchanged.
+      const err = new Error((se || "").toString().trim() || e.message);
+      err.code = e.code;
+      rej(err);
+    }));
 }
 
 // cleaned text → route into the selected agent's pane (with its esc settings)
@@ -504,7 +511,16 @@ async function routeToAgent(agentId, text) {
 }
 
 function handleGo(m) {
-  const j = pending[m.job_id]; if (!j) return;
+  // Event-driven seam: forward EVERY dictation-go NDJSON message to the renderer
+  // verbatim (annotated with the originating agentId when correlatable by job_id),
+  // so the Arcade's dictation state machine can resolve on Go's own events
+  // (result → confirmed, error → error, status/ready/health_result observable).
+  // result/error/status carry a job_id; ready/health_result/log do not.
+  const j = m.job_id ? pending[m.job_id] : null;
+  toRenderer("dictation:event", { ...m, agentId: j ? j.agentId : undefined });
+  if (!j) return; // ready/health_result/log: forwarded above, nothing to route
+  // Current routing (until the Phase 0005 dictation machine owns the send): on a
+  // confirming result, route cleaned text into the agent's pane; surface errors.
   if (m.type === "result") { delete pending[m.job_id]; routeToAgent(j.agentId, m.cleaned_text); }
   else if (m.type === "error") { delete pending[m.job_id]; toRenderer("status", { agentId: j.agentId, state: "error", msg: m.error }); }
 }
