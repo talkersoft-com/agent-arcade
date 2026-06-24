@@ -12,6 +12,7 @@
 // each raw push still arrives at exactly one translate site.
 import { bus } from "./bus.js";
 import { onGoEvent, setDictationAvailable } from "./dictation.js";
+import { driveShellData, driveShellExit } from "./terminal.js";
 
 const arcade = window.arcade || {};
 
@@ -67,9 +68,13 @@ export function wireIpc(send) {
   // Capability gate push → drive the manager's availability flag (and stop a recording
   // if the backend vanishes mid-capture).
   if (arcade.onDictation) arcade.onDictation((p) => { setDictationAvailable(p); bus.emit("dictation:available", p); });
-  // Phase 0006 (workspace shell): onShellData / onShellExit translate here.
-  if (arcade.onShellData) arcade.onShellData((p) => bus.emit("shell:data", p));
-  if (arcade.onShellExit) arcade.onShellExit((p) => bus.emit("shell:exit", p));
+  // Phase 0006 (workspace shell): onShellData / onShellExit are TRANSLATED here — the
+  // single raw-IPC→XState site — into SHELL.DATA / SHELL.EXIT events on the terminal
+  // machine (driveShellData/driveShellExit). The machine's provided actions then write
+  // to the live xterm (data) / print the dead-shell notice (exit). No ambient bus emit:
+  // the shell pushes now DRIVE the machine, per the Phase 0006 contract.
+  if (arcade.onShellData) arcade.onShellData((p) => driveShellData(p));
+  if (arcade.onShellExit) arcade.onShellExit((p) => driveShellExit(p));
 }
 
 // Start the load loop: initial load, 4s poll, and a reload on window focus (so a new
@@ -78,4 +83,8 @@ export function startDataLoop(send) {
   loadData(send);
   setInterval(() => loadData(send), 4000);
   window.addEventListener("focus", () => loadData(send));
+  // Surfaces that change agent state (e.g. the terminal launching/respawning a pane)
+  // ask for an immediate refresh — same intent as the reference's post-launchAgent
+  // loadData(), so `running`/`pane_id` reflect without waiting for the 4s poll.
+  bus.on("agents:reload", () => loadData(send));
 }
