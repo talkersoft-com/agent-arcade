@@ -1,0 +1,5 @@
+
+# hv-managed (added by hv deck provision — idempotent)
+.claude/
+*.md
+!README.md
