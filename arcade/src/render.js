@@ -158,7 +158,7 @@ function setStrip(ctx, a) {
 }
 
 function stateLabel(st) {
-  return { sending: "⣾ sending…", delivered: "✓ delivered", error: "⚠ failed" }[st] || "● idle";
+  return { recording: "● recording — ⌘D send · Esc cancel", sending: "⣾ sending…", delivered: "✓ delivered", error: "⚠ failed" }[st] || "● idle";
 }
 function setMsg(t, err) { const m = $("msg"); m.textContent = t || ""; m.style.color = err ? "#e5484d" : "#9aa4b2"; }
 function setAvMsg(t, err) { const m = $("av-msg"); m.textContent = t || ""; m.style.color = err ? "#e5484d" : "#9aa4b2"; }
@@ -201,7 +201,7 @@ function renderAgent(ctx) {
     $("av-help").style.display = "";
     $("av-help").innerHTML =
       `<kbd>i</kbd> type${draft ? ' <span style="opacity:.7">(draft saved)</span>' : ""} &nbsp;·&nbsp; <kbd>t</kbd> terminal &nbsp;·&nbsp; <kbd>^C</kbd> interrupt &nbsp;·&nbsp; <kbd>⌘</kbd><kbd>←</kbd><kbd>→</kbd> agent &nbsp;·&nbsp; <kbd>⌘P</kbd> watch &nbsp;·&nbsp; <kbd>Esc</kbd> back`;
-    const lbl = { sending: "⣾ sending…", delivered: "✓ delivered", error: "⚠ failed" }[status] || "● idle";
+    const lbl = { recording: "● recording — ⌘D send · Esc cancel", sending: "⣾ sending…", delivered: "✓ delivered", error: "⚠ failed" }[status] || "● idle";
     setAvMsg(lbl, status === "error");
   }
 }

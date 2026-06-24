@@ -6,6 +6,10 @@
 // Phase 0005/0006 to fill in.
 import { $ } from "./dom.js";
 import { bus } from "./bus.js";
+import {
+  toggleDictation, cancelDictation, commitForNavigation,
+  isRecording, recordingAgentId, isDictationAvailable, recordingNav,
+} from "./dictation.js";
 
 // `api` is supplied by main.js: { send, focusedActor, focusedAgent, isMode, ctx }.
 export function wireKeyboard(api) {
@@ -67,21 +71,23 @@ function onKeydown(e, api) {
       return;
     }
 
-    // ── dictation / watch — STUBBED for Phase 0005 (structure in place) ──
-    if (e.metaKey && (e.key === "d" || e.key === "D")) { e.preventDefault(); stubDictation(); return; }
+    // ── dictation (⌘D toggle) / watch (⌘P) ──
+    if (isDictationAvailable() && e.metaKey && (e.key === "d" || e.key === "D")) { e.preventDefault(); toggleDictation(); return; }
     if (e.metaKey && (e.key === "p" || e.key === "P")) { e.preventDefault(); stubWatch(); return; }
 
-    // ⌘←/→ switch agent (deliberate gesture; bare arrows are inert on the menu).
-    if (e.metaKey && e.key === "ArrowLeft") { e.preventDefault(); api.send({ type: "SWITCH_AGENT", dir: -1 }); return; }
-    if (e.metaKey && e.key === "ArrowRight") { e.preventDefault(); api.send({ type: "SWITCH_AGENT", dir: 1 }); return; }
+    // ⌘←/→ switch agent (deliberate gesture; bare arrows are inert on the menu). When a
+    // recording is in flight, route through the recordingNavBehavior gate first.
+    if (e.metaKey && e.key === "ArrowLeft") { e.preventDefault(); navAgent(api, -1); return; }
+    if (e.metaKey && e.key === "ArrowRight") { e.preventDefault(); navAgent(api, 1); return; }
 
     // ^C interrupt — STUBBED for Phase 0006 (terminal/pane).
     if (e.ctrlKey && (e.key === "c" || e.key === "C")) { e.preventDefault(); stubInterrupt(); return; }
 
     switch (e.key) {
-      case "i": case "I": e.preventDefault(); startInsert(api); break;
+      case "i": case "I": e.preventDefault(); if (!isRecording()) startInsert(api); break;  // typing within the agent
       case "t": case "T": e.preventDefault(); stubTerminal(); break;   // Phase 0006
-      case "Escape": api.send({ type: "EXIT_TO_RAIL" }); break;
+      // Esc → cancel a live recording (discard) FIRST; otherwise back to rail.
+      case "Escape": if (isRecording()) { cancelDictation(); } else { api.send({ type: "EXIT_TO_RAIL" }); } break;
     }
     return;
   }
@@ -92,13 +98,45 @@ function onKeydown(e, api) {
     case "ArrowLeft": e.preventDefault(); api.send({ type: "RAIL_MOVE", dA: -1 }); break;
     case "ArrowDown": e.preventDefault(); api.send({ type: "RAIL_MOVE", dG: 1 }); break;
     case "ArrowUp": e.preventDefault(); api.send({ type: "RAIL_MOVE", dG: -1 }); break;
-    case "Enter": api.send({ type: "ENTER_AGENT" }); break;
-    case "Escape": requestExit(); break;   // rail is the top level — Esc exits
+    case "Enter": gateRailEnter(api); break;
+    case "Escape": if (isRecording()) { cancelDictation(); } else { requestExit(); } break;   // rail top level
     case "f": case "F": e.preventDefault(); api.send({ type: "CYCLE_FILTER", dir: e.shiftKey ? -1 : 1 }); break;
     default:
       if (/^[1-9]$/.test(e.key)) { api.send({ type: "SELECT_INDEX", index: +e.key - 1 }); }
   }
 }
+
+// ── recordingNavBehavior gate (Phase 0005) ──────────────────────────────────────
+// Navigating to ANOTHER agent while recording:
+//   send (default): commit dictation to the ORIGINAL agent, then navigate immediately;
+//                   toast "Sent to [name]". The job actor outlives the navigation.
+//   lock:           block navigation; toast "Locked while recording".
+// Navigating WITHIN the recording agent (or not recording) → proceed unchanged.
+
+// ⌘←/→ agent switch from the agent view (always targets a different agent).
+async function navAgent(api, dir) {
+  if (isRecording()) {
+    if (recordingNav() === "lock") { lockedToast(); return; }
+    // send: commit to the original agent, THEN navigate immediately (don't await Go).
+    const name = await commitForNavigation();
+    if (name) bus.emit("toast", { text: "Sent to " + name, kind: "info" });
+  }
+  api.send({ type: "SWITCH_AGENT", dir });
+}
+
+// Rail Enter: entering an agent moves focus to another agent (or the same one). If a
+// recording is in flight it was started on a DIFFERENT focused agent, so this is always
+// a "navigate to another agent" event w.r.t. the recording.
+async function gateRailEnter(api) {
+  if (isRecording()) {
+    if (recordingNav() === "lock") { lockedToast(); return; }
+    const name = await commitForNavigation();
+    if (name) bus.emit("toast", { text: "Sent to " + name, kind: "info" });
+  }
+  api.send({ type: "ENTER_AGENT" });
+}
+
+function lockedToast() { bus.emit("toast", { text: "Locked while recording", kind: "info" }); }
 
 // ── agent-view: insert / send ──
 function startInsert(api) {
@@ -142,6 +180,8 @@ function requestExit() {
 
 // ── Esc handler (single source of truth; routed from the menu accelerator) ──
 function handleEscape(api) {
+  // Esc cancels a live recording FIRST (discard — the ONLY discard path), staying put.
+  if (isRecording()) { cancelDictation(); return; }
   if (api.isMode("agent")) {
     const actor = api.focusedActor();
     if (actor && actor.getSnapshot().context.view === "insert") { cancelInsert(api); return; }
@@ -154,7 +194,6 @@ function handleEscape(api) {
 function setAvMsg(t, err) { const m = $("av-msg"); if (m) { m.textContent = t || ""; m.style.color = err ? "#e5484d" : "#9aa4b2"; } }
 
 // ── stubs for later phases (routing exists; behavior lands in 0005/0006) ──
-function stubDictation() { bus.emit("toast", { text: "Dictation arrives in the next phase.", kind: "info" }); } // Phase 0005 (⌘D)
-function stubWatch() { /* Phase 0005 — ⌘P watch window */ }
+function stubWatch() { /* Phase 0005+ — ⌘P watch window pop-out (capture lands first) */ }
 function stubTerminal() { bus.emit("toast", { text: "The terminal arrives in the next phase.", kind: "info" }); } // Phase 0006 (t)
 function stubInterrupt() { /* Phase 0006 — ^C interrupt pane */ }

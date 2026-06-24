@@ -19,6 +19,7 @@ import { draw, setFocusedSnapshotGetter } from "./render.js";
 import { wireKeyboard } from "./keyboard.js";
 import { wireToasts } from "./toast.js";
 import { wireIpc, startDataLoop } from "./ipc.js";
+import { setDictationHost, setDictationAvailable, applyDictationSettings } from "./dictation.js";
 
 function boot() {
   applyNotch();
@@ -70,12 +71,40 @@ function boot() {
     repositionRail: () => draw(arcade.getSnapshot()),
   };
 
+  // ── dictation host bridge ──
+  // Lets the dictation manager reach the root machine: read the focused agent (to start
+  // a recording on), and push per-agent dictation status onto the ORIGINATING agent's
+  // actor (durable per-agent model — the status names that agent even after navigation).
+  setDictationHost({
+    focusedAgent: () => api.focusedAgent(),
+    setAgentStatus: (agentId, status) => {
+      if (!agentId) return;
+      arcade.send({ type: "ENSURE_ACTOR", id: agentId });
+      arcade.send({ type: "STATUS", agentId, state: status });
+      // "delivered" is transient — settle back to idle (matches the reference's onStatus).
+      if (status === "delivered") setTimeout(() => {
+        const a = arcade.getSnapshot().context.agentActors[agentId];
+        if (a && a.getSnapshot().context.status === "delivered") arcade.send({ type: "STATUS", agentId, state: "idle" });
+      }, 1500);
+    },
+  });
+
   wireToasts();
   wireKeyboard(api);
   wireIpc((e) => arcade.send(e));
 
   arcade.start();
   startDataLoop((e) => arcade.send(e));
+
+  // Seed dictation availability + timing/recordingNavBehavior from cached state, then
+  // keep them live (onDictation push handled in the IPC seam; settings re-read on focus).
+  (async () => {
+    try { if (window.arcade && window.arcade.dictationGet) setDictationAvailable(await window.arcade.dictationGet()); } catch {}
+    try { if (window.arcade && window.arcade.settings) applyDictationSettings(await window.arcade.settings()); } catch {}
+  })();
+  window.addEventListener("focus", async () => {
+    try { if (window.arcade && window.arcade.settings) applyDictationSettings(await window.arcade.settings()); } catch {}
+  });
 }
 
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);

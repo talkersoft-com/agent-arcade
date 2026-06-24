@@ -11,6 +11,7 @@
 // structure exists for Phase 0005 (dictation) to slot its machine in without rework —
 // each raw push still arrives at exactly one translate site.
 import { bus } from "./bus.js";
+import { onGoEvent, setDictationAvailable } from "./dictation.js";
 
 const arcade = window.arcade || {};
 
@@ -56,12 +57,16 @@ export function wireIpc(send) {
   // consumes (kept here so it shares the one-translate-site rule).
   if (arcade.onEsc) arcade.onEsc(() => bus.emit("escape"));
 
-  // ── seams reserved for later phases — bound now so the structure exists ──
-  // Phase 0005 (dictation): onDictationEvent (raw Go NDJSON) + onDictation (gate).
-  // Each push is translated ONCE here into a machine event when 0005 lands. For now
-  // we forward as ambient notifications only (no machine owns them yet).
-  if (arcade.onDictationEvent) arcade.onDictationEvent((p) => bus.emit("dictation:event", p));
-  if (arcade.onDictation) arcade.onDictation((p) => bus.emit("dictation:available", p));
+  // ── DICTATION (Phase 0005): the verbatim Go NDJSON stream + the capability gate ──
+  // onDictationEvent is THE single translate site that drives the dictation machine:
+  // each raw Go message is handed to the dictation manager, which resolves it back to
+  // the originating per-job actor by job_id (result → confirmed, error → error;
+  // status/ready/health_result observable). We still emit an ambient bus signal so
+  // other observers (debug/legends) can react, but the machine is driven via onGoEvent.
+  if (arcade.onDictationEvent) arcade.onDictationEvent((p) => { onGoEvent(p); bus.emit("dictation:event", p); });
+  // Capability gate push → drive the manager's availability flag (and stop a recording
+  // if the backend vanishes mid-capture).
+  if (arcade.onDictation) arcade.onDictation((p) => { setDictationAvailable(p); bus.emit("dictation:available", p); });
   // Phase 0006 (workspace shell): onShellData / onShellExit translate here.
   if (arcade.onShellData) arcade.onShellData((p) => bus.emit("shell:data", p));
   if (arcade.onShellExit) arcade.onShellExit((p) => bus.emit("shell:exit", p));
