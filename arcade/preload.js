@@ -27,6 +27,11 @@ contextBridge.exposeInMainWorld("arcade", {
   onShellData: (cb) => ipcRenderer.on("arcade:shellData", (_e, p) => cb(p)),
   onShellExit: (cb) => ipcRenderer.on("arcade:shellExit", (_e, p) => cb(p)),
   onStatus: (cb) => ipcRenderer.on("status", (_e, s) => cb(s)),
+  // Raw dictation-go NDJSON events, forwarded verbatim from main (annotated with
+  // agentId when correlatable by job_id): { type:"result"|"error"|"status"|"ready"|
+  // "health_result", job_id?, agentId?, cleaned_text?, ... }. The dictation state
+  // machine resolves on these (result → confirmed, error → error).
+  onDictationEvent: (cb) => ipcRenderer.on("dictation:event", (_e, p) => cb(p)),
   onEsc: (cb) => ipcRenderer.on("arcade:esc", () => cb()), // Esc routed from a menu accelerator (macOS eats it from the page)
   // dictation capability gate (Studio's main owns the probe; pushed live here)
   dictationGet: () => ipcRenderer.invoke("arcade:dictationGet"),

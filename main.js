@@ -689,8 +689,18 @@ function runWez(args) {
       (err, stdout, stderr) => {
         if (err) {
           const msg = (stderr || "").toString().trim() || err.message;
-          if (err.code === "ENOENT") return reject(new Error(`wezterm-bridge binary missing — run "npm run build:wezterm"`));
-          return reject(new Error(msg));
+          if (err.code === "ENOENT") {
+            const e = new Error(`wezterm-bridge binary missing — run "npm run build:wezterm"`);
+            e.code = "ENOENT";
+            return reject(e);
+          }
+          // Surface the bridge's non-zero EXIT CODE so a caller's {ok:false,error}
+          // result can carry it (the bridge exits 1 on any failure, 2 on bad usage).
+          // execFile sets err.code to the numeric exit status here. Keep .message the
+          // bridge's stderr (unchanged); just attach the code so the seam is visible.
+          const e = new Error(msg);
+          e.code = err.code;
+          return reject(e);
         }
         resolve((stdout || "").toString());
       });
