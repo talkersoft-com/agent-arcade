@@ -1,6 +1,6 @@
 {
   "name": "@talkersoft-com/agent-arcade",
-  "version": "0.2.11",
+  "version": "0.2.12",
   "description": "Agent Arcade — voice-driven control for your AI agents (Electron UI + Go API bridge over NDJSON).",
   "author": "talkersoft",
   "repository": {
@@ -8,7 +8,8 @@
     "url": "git+https://github.com/talkersoft-com/agent-arcade.git"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
   },
   "files": [
     "main.js",
