@@ -18,7 +18,7 @@ import { terminalMachine } from "./machines/terminalActor.js";
 import { applyNotch, $ } from "./dom.js";
 import { bus } from "./bus.js";
 import { draw, setFocusedSnapshotGetter, setTerminalUpGetter } from "./render.js";
-import { wireKeyboard } from "./keyboard.js";
+import { wireKeyboard, applyExitSettings } from "./keyboard.js";
 import { wireToasts } from "./toast.js";
 import { wireIpc, startDataLoop } from "./ipc.js";
 import { setDictationHost, setDictationAvailable, applyDictationSettings } from "./dictation.js";
@@ -146,12 +146,13 @@ function boot() {
       if (window.arcade && window.arcade.settings) {
         const st = await window.arcade.settings();
         applyDictationSettings(st);
+        applyExitSettings(st);
         if (st && Number.isFinite(st.compose_split)) setComposeSplit(st.compose_split);
       }
     } catch {}
   })();
   window.addEventListener("focus", async () => {
-    try { if (window.arcade && window.arcade.settings) applyDictationSettings(await window.arcade.settings()); } catch {}
+    try { if (window.arcade && window.arcade.settings) { const st = await window.arcade.settings(); applyDictationSettings(st); applyExitSettings(st); } } catch {}
   });
 }
 
