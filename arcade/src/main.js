@@ -15,7 +15,8 @@
 import { createActor } from "xstate";
 import { arcadeMachine } from "./machines/arcadeMachine.js";
 import { terminalMachine } from "./machines/terminalActor.js";
-import { applyNotch } from "./dom.js";
+import { applyNotch, $ } from "./dom.js";
+import { bus } from "./bus.js";
 import { draw, setFocusedSnapshotGetter, setTerminalUpGetter } from "./render.js";
 import { wireKeyboard } from "./keyboard.js";
 import { wireToasts } from "./toast.js";
@@ -124,6 +125,11 @@ function boot() {
   });
 
   wireToasts();
+  // Global recording indicator (bottom-right ● REC, every view): driven off the
+  // dictation machine's state events. Visible whenever a recording is live.
+  bus.on("dictation:state", ({ recording }) => {
+    const el = $("rec-indicator"); if (el) el.classList.toggle("on", !!recording);
+  });
   wireTerminal();          // macro-bar / prompt click + input handlers (Phase 0006)
   wireKeyboard(api);
   wireIpc((e) => arcade.send(e));

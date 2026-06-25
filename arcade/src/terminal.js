@@ -48,6 +48,10 @@ function setAvMsg(t, err) { const m = $("av-msg"); if (m) { m.textContent = t ||
 // 0. wiring — install the shell-push action writers + the DOM click handlers once.
 // ═══════════════════════════════════════════════════════════════════════════════
 let wired = false;
+// Per-agent terminal-prompt draft, kept in memory until the app exits (parity with the
+// agent type box). Saved on every keystroke, restored on terminal open / agent switch,
+// cleared on a successful send.
+const termDrafts = new Map(); // agentId → draft string
 export function wireTerminal() {
   if (wired) return; wired = true;
   // The @-macro chip bar + picker click handlers (terminal peek only).
@@ -61,6 +65,8 @@ export function wireTerminal() {
   if (inp) {
     inp.addEventListener("input", autoGrow);
     inp.addEventListener("input", macroHint);
+    // Persist the draft per-agent so it survives closing/reopening the terminal.
+    inp.addEventListener("input", () => { const a = currentAgent(); if (a) termDrafts.set(a.id, inp.value); });
   }
   // Re-fit the live shell on resize (only while it's up).
   window.addEventListener("resize", () => { if (inShell()) fitShell(); });
@@ -121,7 +127,7 @@ export async function openTerm() {
   lastTermRaw = "";
   if (term) term.send({ type: "OPEN", agentId: a.id });   // machine → peek (renders via subscription)
   refreshAvTerm(); startPoll(2500);
-  const inp = $("av-term-input"); if (inp) { inp.value = ""; autoGrow(); inp.focus(); }
+  const inp = $("av-term-input"); if (inp) { inp.value = termDrafts.get(a.id) || ""; autoGrow(); inp.focus(); }
   // Ensure the pane is live (reuse / respawn + resume) — same guarantee as the reference.
   const res = await arcade.launchAgent(a.id);
   if (!(inPeek() && curId() === a.id)) return;             // user moved on meanwhile
@@ -143,6 +149,8 @@ export function switchTerminalInView(dir) {
   // focused agent and ensure its pane is live.
   const a = currentAgent(); if (!a) return;
   lastTermRaw = "";
+  // Restore the new agent's saved prompt draft (each agent keeps its own).
+  const inp = $("av-term-input"); if (inp) { inp.value = termDrafts.get(a.id) || ""; autoGrow(); }
   if (term) term.send({ type: "OPEN", agentId: a.id });
   stopPoll(); refreshAvTerm();
   clearTimeout(switchTimer);
@@ -176,7 +184,7 @@ export async function sendTermInput() {
   const a = currentAgent(); const inp = $("av-term-input"); if (!inp) return;
   const text = inp.value;
   if (!a || !text.trim()) return;
-  inp.value = ""; autoGrow();
+  inp.value = ""; termDrafts.delete(a.id); autoGrow();
   const res = await arcade.sendText(a.id, text);
   if (res && res.ok === false) {
     const m = "send failed: " + (res.error || "") + (res.code != null ? ` (exit ${res.code})` : "");
