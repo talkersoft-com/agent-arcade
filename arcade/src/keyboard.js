@@ -33,6 +33,10 @@ export function wireKeyboard(api) {
   const welOrb = $("wel-orb");
   if (welOrb) welOrb.addEventListener("click", () => igniteSetup());
 
+  // Exit-confirm overlay (warn-on-exit) buttons.
+  const exitNo = $("exit-no"); if (exitNo) exitNo.addEventListener("click", closeExitConfirm);
+  const exitYes = $("exit-yes"); if (exitYes) exitYes.addEventListener("click", confirmExit);
+
   // Keep the per-agent draft in sync on every keystroke in the type box. This is the
   // write side of the durable draft (render.js is the read side).
   const ta = $("av-input");
@@ -59,6 +63,16 @@ function onKeydown(e, api) {
   // WELCOME (0 agents): Enter/Space → setup; swallow other nav.
   if (api.isMode("rail") && ctx.loaded && !agents.length) {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); igniteSetup(); }
+    return;
+  }
+
+  // EXIT CONFIRM (warn-on-exit): the overlay owns all keys until answered.
+  if (confirmingExit) {
+    e.preventDefault();
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") { exitChoice ^= 1; renderExitConfirm(); }
+    else if (e.key === "y" || e.key === "Y") confirmExit();
+    else if (e.key === "n" || e.key === "N" || e.key === "Escape") closeExitConfirm();
+    else if (e.key === "Enter") { exitChoice === 1 ? confirmExit() : closeExitConfirm(); }
     return;
   }
 
@@ -98,7 +112,7 @@ function onKeydown(e, api) {
     // even inside sync (every other key still reaches the pane). ⌘ only (not Ctrl) so
     // Ctrl+D stays a real EOF in sync.
     if (isDictationAvailable() && e.metaKey && (e.key === "d" || e.key === "D")) { e.preventDefault(); toggleDictation(); return; }
-    if (e.metaKey && (e.key === "p" || e.key === "P")) { e.preventDefault(); stubWatch(); return; }
+    if (e.metaKey && (e.key === "p" || e.key === "P")) { e.preventDefault(); manualPopOut(api); return; }
 
     // ── WORKSPACE SHELL: xterm's textarea owns every keystroke. Only ⌘A (the ONLY way
     // out) is carved out here; Esc comes via the menu accelerator (handleEscape →
@@ -270,16 +284,33 @@ async function sendTyped(api) {
   }
 }
 
+// ── warn-on-exit confirm (app.warn_on_exit). The single exit entry point: with the
+// setting on, pop a Yes/No the user must answer (default No so a stray Enter won't quit). ──
+let warnOnExit = false;      // set from arcade settings (applyExitSettings)
+let confirmingExit = false;  // the overlay is up
+let exitChoice = 0;          // 0 = No (default), 1 = Yes
+export function applyExitSettings(st) { if (st && typeof st.warn_on_exit === "boolean") warnOnExit = st.warn_on_exit; }
 function requestExit() {
-  // warn-on-exit overlay is a later surface; this phase exits straight away.
-  try { if (window.arcade && window.arcade.exit) window.arcade.exit(); } catch {}
+  if (!warnOnExit) { try { if (window.arcade && window.arcade.exit) window.arcade.exit(); } catch {} return; }
+  confirmingExit = true; exitChoice = 0;
+  const o = $("exit-overlay"); if (o) o.classList.add("on");
+  renderExitConfirm();
 }
+function renderExitConfirm() {
+  const no = $("exit-no"), yes = $("exit-yes");
+  if (no) no.classList.toggle("sel", exitChoice === 0);
+  if (yes) yes.classList.toggle("sel", exitChoice === 1);
+}
+function closeExitConfirm() { confirmingExit = false; const o = $("exit-overlay"); if (o) o.classList.remove("on"); }
+function confirmExit() { closeExitConfirm(); try { if (window.arcade && window.arcade.exit) window.arcade.exit(); } catch {} }
 
 // ── Esc handler (single source of truth; routed from the menu accelerator) ──
 // macOS eats Esc for the fullscreen window, so main routes it via a menu accelerator.
 // Precedence mirrors the reference's handleEscape().
 function handleEscape(api) {
-  // Macro picker first — Esc cancels it.
+  // Exit-confirm overlay first — Esc = No (cancel the exit).
+  if (confirmingExit) { closeExitConfirm(); return; }
+  // Macro picker — Esc cancels it.
   if (isMacroPickerOpen()) { cancelMacroPicker(); return; }
   // Esc cancels a live recording (discard — the ONLY discard path), staying put.
   if (isRecording()) { cancelDictation(); return; }
@@ -301,5 +332,22 @@ function handleEscape(api) {
 
 function setAvMsg(t, err) { const m = $("av-msg"); if (m) { m.textContent = t || ""; m.style.color = err ? "#e5484d" : "#9aa4b2"; } }
 
-// ── stub for a later phase (routing exists; behavior lands later) ──
-function stubWatch() { /* Phase 0005+ — ⌘P watch window pop-out (capture lands first) */ }
+// ── ⌘P: pop out (or focus) the GUI "watch" terminal window for the focused agent.
+// Launches the agent's session first if it isn't running, so ⌘P "just works" anywhere. ──
+async function manualPopOut(api) {
+  const a = api.focusedAgent(); if (!a) return;
+  const aid = a.id;
+  if (!a.running) {
+    bus.emit("toast", { text: "Launching agent…", kind: "info" });
+    try {
+      const r = window.arcade && window.arcade.launchAgent ? await window.arcade.launchAgent(aid) : null;
+      if (!r || !r.ok) { bus.emit("toast", { text: "Couldn't launch agent: " + ((r && r.error) || "unknown"), kind: "error" }); return; }
+    } catch (e) { bus.emit("toast", { text: "Couldn't launch agent: " + (e && e.message), kind: "error" }); return; }
+    bus.emit("agents:reload");
+  }
+  try {
+    const res = window.arcade && window.arcade.popOut ? await window.arcade.popOut(aid, true) : null; // force = explicit user intent
+    if (res && res.ok) bus.emit("toast", { text: "Popped out — watch on the other monitor", kind: "info" });
+    else bus.emit("toast", { text: "Pop-out failed: " + ((res && res.error) || ""), kind: "error" });
+  } catch (e) { bus.emit("toast", { text: "Pop-out failed: " + (e && e.message), kind: "error" }); }
+}
