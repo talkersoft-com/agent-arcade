@@ -1002,6 +1002,9 @@ function detectWeztermWindow() {
   });
 }
 ipcMain.handle("wezterm:detect", () => detectWeztermWindow());
+// Open the WezTerm GUI window (Displays settings) so the user can drag it to the
+// monitor/size they want, then Capture it. Uses the app's bundled WezTerm + config.
+ipcMain.handle("wezterm:launch", () => { launchWeztermGui(); return { ok: true }; });
 // Live-terminal view-box ratio (persisted by the Arcade): box size ÷ Arcade window.
 // Studio's pop-out "Sync" multiplies it by the Arcade monitor dims to get the perfect
 // WezTerm window size, so the popped-out window matches the in-Arcade view box.
