@@ -42,7 +42,15 @@ export function SettingsDisplays() {
     const d = await tester.detectWezterm();
     if (d && d.ok) { setWezSyncStatus(`● Terminal detected · ${d.w}×${d.h} @ ${d.x},${d.y} (${d.display})`); setWezGeom(d); }
     else if (d && d.reason === "permission") setWezSyncStatus("⚠ Automation permission needed — grant System Events.");
-    else setWezSyncStatus("○ WezTerm not running — open & position it, then capture.");
+    else setWezSyncStatus("○ WezTerm not running — click “Open WezTerm”, position it, then Capture.");
+  }
+
+  // Open the WezTerm GUI window so the user can drag it to the monitor/size they want,
+  // then auto-detect it (which enables Capture current).
+  async function openWezterm() {
+    setWezSyncStatus("◌ opening WezTerm — drag it where you want it, then Capture…");
+    try { await tester.launchWezterm(); } catch {}
+    setTimeout(refreshWeztermSync, 1800); // give the GUI a moment to appear, then detect it
   }
 
   async function onMonitorChange(e) {
@@ -66,10 +74,19 @@ export function SettingsDisplays() {
     await tester.setWatch(null);
     useStore.setState({ watch: await tester.getWatch() || {} });
   }
-  function capture() {
-    if (!wezGeom) return;
-    fillWatch({ monitor_x: wezGeom.x, monitor_y: wezGeom.y, monitor_w: wezGeom.w, monitor_h: wezGeom.h });
-    setWezSaved(`captured ${wezGeom.w}×${wezGeom.h} @ ${wezGeom.x},${wezGeom.y} into the fields — review, then Save`);
+  // Read the WezTerm window's CURRENT position+size (fresh detect, so it reflects
+  // wherever you just dragged it) into the fields.
+  async function capture() {
+    setWezSaved("◌ reading WezTerm window…");
+    const d = await tester.detectWezterm();
+    if (!d || !d.ok) {
+      if (d && d.reason === "permission") setWezSaved("⚠ Automation permission needed — grant System Events, then retry.");
+      else setWezSaved("⚠ No WezTerm window found — click “↗ Open WezTerm” first, position it, then Capture.");
+      return;
+    }
+    setWezGeom(d);
+    fillWatch({ monitor_x: d.x, monitor_y: d.y, monitor_w: d.w, monitor_h: d.h });
+    setWezSaved(`captured ${d.w}×${d.h} @ ${d.x},${d.y} into the fields — review, then Save`);
   }
   async function syncToArcade() {
     const [ratio, disp, scr] = await Promise.all([tester.getViewRatio(), tester.getDisplay(), tester.listScreens()]);
@@ -131,18 +148,18 @@ export function SettingsDisplays() {
           <button className="ghost" title="Clear the saved position so the window returns to your primary display — fixes a lost / off-screen window or an unplugged monitor" onClick={watchReset}>Reset</button>
         </div>
         <div className="row" style={{ alignItems: "center" }}>
-          <label style={{ flex: "0 0 150px" }}>Sync from Terminal</label>
+          <label style={{ flex: "0 0 150px" }}>WezTerm window</label>
           <span className="hint" style={{ flex: 1 }}>{wezSyncStatus}</span>
-          <button className="ghost" onClick={refreshWeztermSync}>Re-check</button>
+          <button className="secondary" title="Open the WezTerm terminal window so you can drag it to the monitor & size you want — then Capture reads it" onClick={openWezterm}>↗ Open WezTerm</button>
         </div>
         <div className="row">
           <span style={{ flex: "0 0 150px" }}></span>
-          <button className="secondary" title="Compute the perfect W×H from the Arcade monitor and the live-terminal view ratio" onClick={syncToArcade}>🧮 Sync to Arcade view</button>
+          <button className="ghost" title="Read the WezTerm window's current position & size into the fields below" onClick={capture}>📍 Capture current</button>
+          <button className="ghost" title="Compute W×H from the Arcade monitor and the live-terminal view ratio" onClick={syncToArcade}>🧮 Sync to Arcade view</button>
           <button className="ghost" title="Resize the open WezTerm window to the W/H + X/Y above so you can see it" onClick={testSize}>▶ Test size</button>
-          <button className="ghost" disabled={!wezGeom} title="Manual fallback: read the live WezTerm window's current size into the fields (does not save)" onClick={capture}>📍 Capture current</button>
           <span className="hint" style={{ marginLeft: 8 }}>{wezSaved}</span>
         </div>
-        <div className="hint">Recommended flow: <b>Sync to Arcade view</b> (computes the perfect W×H = Arcade monitor × live-terminal view ratio) → <b>Test size</b> (applies it to the open WezTerm window so you can see it) → <b>Save</b>. <b>Capture current</b> is a manual fallback that reads the live window's size into the fields (it does <i>not</i> save). Needs the Automation permission.</div>
+        <div className="hint">Flow: <b>↗ Open WezTerm</b> (opens the terminal window) → drag/resize it onto the monitor you want → <b>📍 Capture current</b> (reads its position & size into the fields) → <b>Save</b>. Or use <b>🧮 Sync to Arcade view</b> to compute W×H automatically, then <b>▶ Test size</b> to preview. Capturing/testing needs the Automation (System Events) permission.</div>
       </div>
 
       <div className="dict-sec" style={{ marginTop: 16 }}>Terminal grid</div>
