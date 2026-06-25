@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' aaimg: data:;" />
+    <title>Agent Arcade</title>
+    <link rel="stylesheet" href="vendor/xterm.css" />
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; user-select: none; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0e14; color: #e6e9ef;
+        font-family: -apple-system, system-ui, sans-serif; }
+      body { display: flex; flex-direction: column; }
+      .title { text-align: center; padding: 22px 0 6px; font-size: 13px; letter-spacing: 3px; opacity: 0.4; text-transform: uppercase; }
+
+      /* optional system filter — only rendered when ≥1 system exists; agents are
+         never *required* to belong to a system, so "All" is the default view. */
+      #sys-filter { display: none; justify-content: center; gap: 8px; padding: 2px 0 8px; flex-wrap: wrap; }
+      .sf-chip { font-size: 12px; padding: 5px 14px; border-radius: 999px; cursor: pointer; opacity: 0.6;
+        border: 1px solid rgba(255,255,255,0.16); background: rgba(255,255,255,0.05); user-select: none; }
+      .sf-chip.sel { opacity: 1; border-color: #5b7cfa; background: rgba(91,124,250,0.18); }
+      .sf-chip .sf-n { opacity: 0.6; font-size: 11px; margin-left: 4px; }
+
+
+      /* ── agent rail: a carousel. The selected agent is ALWAYS centered; ←/→ slide
+         the row through the center, ↑/↓ slide between group rows. One component for
+         both flat (a single row) and grouped (a vertical stack of rows). ── */
+      #rail { flex: 1; position: relative; overflow: hidden; }
+      #rail-col { position: absolute; left: 0; right: 0; top: 50%;
+        transition: transform .30s cubic-bezier(.22,.61,.36,1); }
+      #rail .grp { position: relative; height: 236px; display: flex; flex-direction: column;
+        justify-content: center; transition: opacity .30s ease, filter .30s ease; }
+      /* label pinned to the top of the row; the row is tall enough that the centered,
+         scaled-up selected avatar never reaches it */
+      #rail .grp-label { position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+        font-size: 11px; letter-spacing: 2.5px; text-transform: uppercase; opacity: .5; white-space: nowrap; z-index: 1; }
+      #rail .grp.active .grp-label { color: #cfd6e2; opacity: .82; }
+      #rail .track { white-space: nowrap; font-size: 0; /* kill inter-card whitespace */
+        transition: transform .30s cubic-bezier(.22,.61,.36,1); }
+      /* one avatar card, laid out inline so the track is a single sliding row */
+      #rail .agent { display: inline-flex; width: 160px; margin: 0 20px; vertical-align: middle;
+        opacity: .5; transform: scale(.82); }
+      /* tier 2 — non-selected cards in the ACTIVE group: dimmer, smaller, still color */
+      #rail .grp.active .agent { opacity: .5; transform: scale(.82); }
+      /* tier 1 — the selected card: centered, largest, lit, color halo */
+      #rail .grp.active .agent.sel { opacity: 1; transform: scale(1.14); }
+      #rail .grp.active .agent.sel .dot { box-shadow: 0 0 0 4px rgba(255,255,255,0.12), 0 0 42px var(--c); }
+      /* tier 3 — every card in a NON-active group: gray silhouette, faded, shrunk */
+      #rail .grp:not(.active) { opacity: .42; filter: grayscale(1); }
+      #rail .grp:not(.active) .agent { opacity: .7; transform: scale(.6); }
+      #rail .grp:not(.active) .dot svg { fill: #6b7280 !important; }
+      /* up/down affordance when there are groups off the center line */
+      #rail .chev { position: absolute; left: 50%; transform: translateX(-50%); font-size: 20px;
+        opacity: .28; pointer-events: none; transition: opacity .3s ease; }
+      #rail .chev.up { top: 10px; } #rail .chev.dn { bottom: 12px; }
+      #rail .chev.hide { opacity: 0; }
+      .agent { display: flex; flex-direction: column; align-items: center; gap: 14px; width: 160px; transition: transform .15s ease, opacity .15s ease; opacity: 0.55; }
+      .agent.sel { opacity: 1; transform: scale(1.18); }
+      .dot { width: 92px; height: 92px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+        border: 3px solid transparent; background: #161b26; box-shadow: 0 6px 30px rgba(0,0,0,0.4); position: relative; }
+      .agent.sel .dot { box-shadow: 0 0 0 4px rgba(255,255,255,0.12), 0 0 38px var(--c); }
+      .dot svg { width: 56px; height: 56px; }
+      .dot .avimg { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block; }
+      .nm { font-size: 16px; font-weight: 700; text-align: center; }
+      .st { font-size: 12px; opacity: 0.7; }
+      .badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+      .badge.run { background: rgba(56,161,105,0.25); color: #54d98c; }
+      .badge.stop { background: rgba(128,128,128,0.22); color: #aab; }
+      .recdot { position: absolute; top: -4px; right: -4px; width: 18px; height: 18px; border-radius: 50%; background: #e5484d; box-shadow: 0 0 14px #e5484d; animation: pulse 1s infinite; }
+      @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+
+      /* bottom strip */
+      #strip { margin: 0 auto 18px; min-width: 60%; max-width: 90%; background: #11151f; border: 1px solid rgba(255,255,255,0.06);
+        border-left: 5px solid var(--c, #444); border-radius: 14px; padding: 14px 22px; }
+      #strip .row1 { font-size: 15px; }
+      #strip .row1 b { font-weight: 800; }
+      #strip .row2 { font-size: 12.5px; opacity: 0.65; margin-top: 4px; font-family: ui-monospace, Menlo, monospace; }
+      #msg { min-height: 16px; margin-top: 6px; font-size: 13px; }
+      #help { text-align: center; padding-bottom: 18px; font-size: 12.5px; opacity: 0.5; letter-spacing: 0.5px; }
+      kbd { background: #1c2230; border: 1px solid rgba(255,255,255,0.12); border-radius: 5px; padding: 1px 6px; font-size: 11px; font-family: ui-monospace, monospace; }
+      .empty { text-align: center; opacity: 0.5; font-size: 15px; }
+      .os-glyph { font-size: 40px; }
+
+      /* help overlay */
+      #help-overlay { display: none; position: fixed; inset: 0; background: rgba(4,6,10,0.86); z-index: 50;
+        align-items: center; justify-content: center; }
+      #help-overlay.on { display: flex; }
+      .help-card { background: #11151f; border: 1px solid rgba(255,255,255,0.12); border-radius: 16px;
+        padding: 28px 36px; min-width: 460px; max-width: 70vw; box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
+      .help-card h2 { margin: 0 0 16px; font-size: 20px; }
+      .help-card h3 { margin: 18px 0 6px; font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase; opacity: 0.5; }
+      .help-row { display: flex; justify-content: space-between; gap: 30px; padding: 4px 0; font-size: 14px; }
+      .help-row .keys { color: #9aa4b2; font-family: ui-monospace, Menlo, monospace; }
+      .help-foot { margin-top: 20px; text-align: center; opacity: 0.5; font-size: 12.5px; }
+
+      /* agent view (drill-in) — the agent MENU only: avatar, name, status, type box.
+         The live terminal is a SEPARATE top-level view (#term-view) — it does NOT
+         share this container, so there's no show/hide overloading and no shared
+         top-center title to flash. */
+      #agent-view { flex: 1; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 0 60px; }
+      .av-name { font-size: 30px; font-weight: 800; }
+      .av-status { font-size: 13.5px; opacity: 0.75; font-family: ui-monospace, Menlo, monospace; }
+      #av-input { display: none; width: 70%; max-width: 760px; height: 130px; resize: none; background: #11151f;
+        color: #e6e9ef; border: 1px solid rgba(255,255,255,0.14); border-radius: 12px; padding: 14px 16px;
+        font-size: 15px; font-family: ui-monospace, Menlo, monospace; outline: none; }
+      #av-input:focus { border-color: var(--c, #2b6cb0); }
+      #av-msg { min-height: 16px; font-size: 13px; color: #9aa4b2; }
+      .av-help { font-size: 12.5px; opacity: 0.5; letter-spacing: 0.5px; }
+
+      /* ── live terminal view (its OWN top-level container) ──
+         No top-center title; a LEFT-aligned header keeps clear of the camera notch
+         without losing vertical space. The terminal fills the screen. */
+      #term-view { flex: 1; display: none; flex-direction: column; align-items: center;
+        justify-content: flex-start; gap: 8px; padding: 14px 0 12px; }
+      #term-view #av-term { flex: 1 1 auto; min-height: 0; width: 94%; max-width: 1400px; overflow: auto; margin: 0;
+        display: flex; flex-direction: column; justify-content: safe center; /* center the scrape vertically; long output still pins to top + scrolls */
+        background: #06080d; color: #cdd3de; border: 1px solid var(--c, rgba(128,128,128,0.3)); border-radius: 10px;
+        padding: 12px 14px; white-space: pre-wrap; word-break: break-word; text-align: left;
+        font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.45; box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+        user-select: text; cursor: text; } /* allow selecting + copying the terminal snapshot (global * resets it to none) */
+      #term-view #av-term-input { display: block; width: 94%; max-width: 1400px; box-sizing: border-box;
+        background: #11151f; color: #e6e9ef; border: 1px solid var(--c, rgba(255,255,255,0.14)); border-radius: 8px;
+        padding: 10px 14px; font-family: ui-monospace, Menlo, monospace; font-size: 13px; line-height: 1.5;
+        outline: none; resize: none; height: auto; min-height: 0; overflow: hidden; transition: height .12s ease; }
+      #term-view #av-term-input:focus { border-color: var(--c, #2b6cb0); }
+      /* compose (⌘E): the editor and the terminal split the FULL available height
+         evenly (50/50) — no dead space at the bottom. The editor grows + scrolls;
+         the terminal stays a live context pane of equal size. */
+      #term-view.compose-open #av-term-input { flex: 1 1 0; min-height: 0; overflow-y: auto;
+        border-color: var(--c, #2b6cb0); box-shadow: 0 0 0 3px rgba(91,124,250,0.15); }
+      #term-view.compose-open #av-term { flex: 1 1 0; min-height: 0; max-height: none; }
+
+      /* live-terminal header: LEFT-aligned ("● Live Terminal · <agent>") */
+      #av-termhead { display: flex; align-items: center; gap: 10px; width: 94%; max-width: 1400px; justify-content: flex-start; }
+      #av-termtag { font-size: 10.5px; font-weight: 800; letter-spacing: 1.4px; text-transform: uppercase;
+        padding: 3px 9px; border-radius: 999px; background: rgba(84,217,140,0.18); color: #54d98c; }
+      #av-termtag::before { content: "●"; margin-right: 5px; font-size: 9px; vertical-align: 1px; }
+      #av-termhead .who { font-size: 13.5px; opacity: 0.7; font-family: ui-monospace, Menlo, monospace; }
+      #av-termhead .who::before { content: "·"; margin-right: 10px; opacity: 0.5; }
+
+      /* MacBook camera notch (built-in only; body.notch set from main): the menu-style
+         views (systems / agent rail / agent detail) center their content with vertical
+         room to spare, so we push their top title DOWN below the camera. The terminal &
+         sync header instead stay left-aligned (above) to keep vertical space. */
+      body.notch .title { padding-top: 58px; }
+
+      /* full-screen sync mode (⌘F): keeps the EXACT same clean terminal layout —
+         the input box just steps aside (every key goes straight to the pane) and
+         the header tag turns blue to read "Sync". No banner strip, no blinking
+         dot, no full-bleed, no realignment. */
+      #term-view.sync-open #av-term-input { display: none; }
+      #term-view.sync-open #av-termtag { background: rgba(91,124,250,0.20); color: #aebdff; }
+
+      /* ── workspace shell (⌘W): a real xterm.js terminal replaces the WezTerm peek.
+         The pre + prompt step aside; the xterm mount fills the screen. ⌘A / Esc back. */
+      #term-view #xterm-mount { display: none; width: 94%; max-width: 1400px; flex: 1 1 auto; min-height: 0;
+        background: #06080d; border: 1px solid var(--c, rgba(128,128,128,0.3)); border-radius: 10px;
+        padding: 8px 10px; box-shadow: 0 8px 30px rgba(0,0,0,0.5); }
+      #term-view.shell-open #av-term, #term-view.shell-open #av-term-input { display: none; }
+      #term-view.shell-open #xterm-mount { display: block; }
+      #term-view.shell-open #av-termtag { background: rgba(245,158,66,0.20); color: #f5b066; }
+      .xterm-host { width: 100%; height: 100%; }
+
+      /* @-command macro bar — a thin chip row above the prompt (terminal peek only) */
+      #macro-bar { display: none; width: 94%; max-width: 1400px; gap: 8px; flex-wrap: nowrap;
+        overflow: hidden; align-items: center; }
+      #term-view.macros-on #macro-bar { display: flex; }
+      .macro-chip { font-size: 12px; font-family: ui-monospace, Menlo, monospace; white-space: nowrap;
+        padding: 5px 11px; border-radius: 999px; background: #141a26; color: #cfd6e2;
+        border: 1px solid var(--c, rgba(255,255,255,0.16)); cursor: pointer; }
+      .macro-chip:hover { background: #1b2433; }
+      .macro-chip .at { opacity: .5; }
+      .macro-chip.more { opacity: .65; border-style: dashed; }
+
+      /* macro arg picker (keyboard-driven overlay) */
+      #macro-picker { display: none; position: fixed; inset: 0; background: rgba(4,6,10,0.86); z-index: 70;
+        align-items: center; justify-content: center; }
+      #macro-picker.on { display: flex; }
+      .mp-card { background: #11151f; border: 1px solid var(--c, rgba(255,255,255,0.16)); border-radius: 16px;
+        padding: 24px 28px; min-width: 460px; max-width: 70vw; box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
+      .mp-cmd { font-family: ui-monospace, Menlo, monospace; font-size: 13px; opacity: .7; }
+      .mp-cmd .at { color: var(--c, #8aa0ff); }
+      .mp-title { font-size: 18px; font-weight: 800; margin: 6px 0 2px; }
+      .mp-desc { font-size: 13px; opacity: .6; margin-bottom: 16px; }
+      .mp-step { font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; opacity: .45; margin-bottom: 8px; }
+      .mp-arglabel { font-size: 15px; font-weight: 700; margin-bottom: 10px; }
+      .mp-opt { padding: 9px 12px; border-radius: 9px; font-size: 14px; font-family: ui-monospace, Menlo, monospace;
+        border: 1px solid transparent; cursor: pointer; }
+      .mp-opt.sel { background: #161b26; border-color: var(--c, #5b7cfa); box-shadow: 0 0 0 3px rgba(91,124,250,0.22); }
+      .mp-opt .ov { opacity: .5; font-size: 12px; margin-left: 8px; }
+      .mp-text { width: 100%; box-sizing: border-box; background: #06080d; color: #e6e9ef;
+        border: 1px solid var(--c, #5b7cfa); border-radius: 9px; padding: 10px 13px; outline: none;
+        font-family: ui-monospace, Menlo, monospace; font-size: 14px; }
+      .mp-compose { background: #06080d; border: 1px solid rgba(255,255,255,0.12); border-radius: 9px;
+        padding: 10px 13px; font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: #cdd3de;
+        white-space: pre-wrap; word-break: break-all; }
+      .mp-foot { margin-top: 16px; font-size: 12.5px; opacity: .5; }
+
+      /* exit-confirm overlay (warn-on-exit): a Yes/No the user must answer. Hides the
+         system avatars behind a dimmed backdrop so the choice is the only thing up. */
+      #exit-overlay { display: none; position: fixed; inset: 0; background: rgba(4,6,10,0.92); z-index: 90;
+        align-items: center; justify-content: center; }
+      #exit-overlay.on { display: flex; }
+      .confirm-card { background: #11151f; border: 1px solid rgba(255,255,255,0.12); border-radius: 16px;
+        padding: 30px 40px; min-width: 420px; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
+      .confirm-card h2 { margin: 0 0 8px; font-size: 22px; }
+      .confirm-sub { margin: 0 0 24px; opacity: 0.6; font-size: 13.5px; }
+      .confirm-btns { display: flex; gap: 16px; justify-content: center; }
+      .confirm-btn { font-size: 15px; font-weight: 800; padding: 12px 28px; border-radius: 10px;
+        border: 2px solid rgba(255,255,255,0.14); background: #161b26; color: #e6e9ef; cursor: pointer; }
+      .confirm-btn.sel { border-color: #5b7cfa; box-shadow: 0 0 0 3px rgba(91,124,250,0.28); }
+      .confirm-btn.danger.sel { border-color: #e5484d; box-shadow: 0 0 0 3px rgba(229,72,77,0.30); }
+      .confirm-foot { margin-top: 24px; opacity: 0.5; font-size: 12.5px; letter-spacing: 0.5px; }
+      /* hide the rail + chrome while the exit confirm is up */
+      body.confirming-exit #rail, body.confirming-exit #sys-filter, body.confirming-exit #strip,
+      body.confirming-exit #help, body.confirming-exit #title { visibility: hidden; }
+
+      /* ── Welcome / start-of-tour (0 agents): the Saturn orb is the CTA ── */
+      #welcome { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 16px; text-align: center; }
+      #welcome .wel-orb { background: transparent; border: none; cursor: pointer; padding: 10px; line-height: 0; animation: welfloat 4.5s ease-in-out infinite; transition: transform .12s; }
+      #welcome .wel-orb svg { width: 200px; height: 200px; display: block; filter: drop-shadow(0 14px 40px rgba(95,214,255,0.32)); }
+      #welcome .wel-orb:hover { transform: scale(1.05); }
+      #welcome .wel-orb:hover svg { filter: drop-shadow(0 18px 54px rgba(95,214,255,0.5)); }
+      #welcome .wel-orb:active { transform: scale(0.98); }
+      #welcome .wel-orb:focus-visible { outline: none; }
+      #welcome .wel-title { font-size: 26px; font-weight: 700; letter-spacing: 0.5px; }
+      #welcome .wel-sub { font-size: 15px; opacity: 0.78; max-width: 460px; }
+      #welcome .wel-cta { margin-top: 2px; font-size: 13px; opacity: 0.6; }
+      @keyframes welfloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-9px); } }
+      #welcome.igniting .wel-orb { animation: welignite 0.5s ease-out forwards; }
+      @keyframes welignite { 0% { transform: scale(1); } 38% { transform: scale(1.18); filter: drop-shadow(0 0 60px rgba(95,214,255,0.95)); } 100% { transform: scale(0.15); opacity: 0; } }
+      #welcome.igniting .wel-title, #welcome.igniting .wel-sub, #welcome.igniting .wel-cta { transition: opacity .3s; opacity: 0; }
+
+      /* ── first-run ambient tour: a non-blocking caption + a one-shot legend glow ── */
+      #tour-cap { position: fixed; z-index: 70; max-width: 540px; display: none; opacity: 0; pointer-events: none;
+        padding: 8px 16px; border-radius: 999px; font-size: 13px; text-align: center; line-height: 1.4;
+        background: rgba(17,22,31,0.92); color: #dfeaf6; border: 1px solid rgba(95,214,255,0.4);
+        box-shadow: 0 8px 28px rgba(0,0,0,0.45); transition: opacity .3s ease; }
+      #tour-cap.show { opacity: 1; }
+      .tour-glow { animation: tourbar 2.4s ease-in-out 1; }
+      @keyframes tourbar { 0%,100% { filter: none; } 35%,65% { filter: drop-shadow(0 0 9px rgba(95,214,255,0.55)); } }
+      .tour-glow kbd { animation: tourkey 0.9s ease-in-out 1 both; }
+      @keyframes tourkey { 0%,100% { box-shadow: none; } 50% { box-shadow: 0 0 0 1px #5fd6ff, 0 0 12px 1px rgba(95,214,255,0.7); } }
+      .tour-glow kbd:nth-of-type(1){animation-delay:0s}    .tour-glow kbd:nth-of-type(2){animation-delay:.08s}
+      .tour-glow kbd:nth-of-type(3){animation-delay:.16s}  .tour-glow kbd:nth-of-type(4){animation-delay:.24s}
+      .tour-glow kbd:nth-of-type(5){animation-delay:.32s}  .tour-glow kbd:nth-of-type(6){animation-delay:.40s}
+      .tour-glow kbd:nth-of-type(7){animation-delay:.48s}  .tour-glow kbd:nth-of-type(8){animation-delay:.56s}
+      .tour-glow kbd:nth-of-type(9){animation-delay:.64s}  .tour-glow kbd:nth-of-type(10){animation-delay:.72s}
+
+      /* global recording indicator — visible in every view while a recording is live */
+      #rec-indicator { display: none; position: fixed; right: 22px; bottom: 20px; z-index: 60;
+        align-items: center; gap: 9px; padding: 7px 15px 7px 12px; border-radius: 999px;
+        background: rgba(22,8,10,0.85); border: 1px solid rgba(229,72,77,0.55);
+        box-shadow: 0 6px 26px rgba(0,0,0,0.55); color: #ff8a8e; font-size: 13px; font-weight: 800; letter-spacing: 2px; }
+      #rec-indicator.on { display: flex; }
+      #rec-indicator .rdot { width: 12px; height: 12px; border-radius: 50%; background: #e5484d;
+        box-shadow: 0 0 13px #e5484d; animation: pulse 1.1s infinite; }
+      /* sticky toast — persists so messages aren't clobbered by redraws/status */
+      #toast { display: none; position: fixed; left: 50%; top: 26px; transform: translateX(-50%);
+        z-index: 80; max-width: 70%; padding: 13px 20px; border-radius: 12px; text-align: center;
+        font-size: 14px; line-height: 1.4; background: rgba(20,10,12,0.95);
+        border: 1px solid rgba(229,72,77,0.6); color: #ffd7d9; box-shadow: 0 10px 40px rgba(0,0,0,0.6); }
+      #toast.show { display: block; }
+      #toast.info { border-color: rgba(91,124,250,0.6); color: #cfe0ff; background: rgba(10,14,28,0.95); }
+      #toast .dismiss { display:block; margin-top: 7px; font-size: 11px; letter-spacing: 1px; opacity: 0.65; }
+    </style>
+  </head>
+  <body>
+    <div id="tour-cap"></div>
+    <div class="title" id="title">Agent Arcade</div>
+    <div id="sys-filter"></div>
+    <div id="rail"></div>
+
+    <!-- Welcome / start-of-tour (shown when there are 0 agents) -->
+    <div id="welcome">
+      <button class="wel-orb" id="wel-orb" title="Start setup" aria-label="Create your first agent">
+        <svg viewBox="0 0 200 200" aria-hidden="true">
+          <defs>
+            <radialGradient id="welOrbBg" cx="50%" cy="50%" r="62%"><stop offset="0%" stop-color="#2a1e63"/><stop offset="100%" stop-color="#0a0916"/></radialGradient>
+            <radialGradient id="welOrbBody" cx="36%" cy="32%" r="78%"><stop offset="0%" stop-color="#b4a6ff"/><stop offset="55%" stop-color="#6d4fe6"/><stop offset="100%" stop-color="#291663"/></radialGradient>
+            <radialGradient id="welOrbSpec" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#ffffff" stop-opacity="0.85"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0"/></radialGradient>
+            <filter id="welRingGlow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="3.4"/></filter>
+            <clipPath id="welRingFront"><rect x="0" y="100" width="200" height="100"/></clipPath>
+          </defs>
+          <rect x="17" y="17" width="166" height="166" rx="47" fill="url(#welOrbBg)"/>
+          <ellipse cx="100" cy="100" rx="76" ry="28" fill="none" stroke="#5fd6ff" stroke-width="9" opacity="0.5" filter="url(#welRingGlow)"/>
+          <ellipse cx="100" cy="100" rx="76" ry="28" fill="none" stroke="#d8f6ff" stroke-width="6"/>
+          <circle cx="100" cy="100" r="47" fill="url(#welOrbBody)"/>
+          <ellipse cx="86" cy="84" rx="20" ry="13" fill="url(#welOrbSpec)"/>
+          <g clip-path="url(#welRingFront)">
+            <ellipse cx="100" cy="100" rx="76" ry="28" fill="none" stroke="#5fd6ff" stroke-width="9" opacity="0.5" filter="url(#welRingGlow)"/>
+            <ellipse cx="100" cy="100" rx="76" ry="28" fill="none" stroke="#d8f6ff" stroke-width="6"/>
+          </g>
+        </svg>
+      </button>
+      <div class="wel-title">Welcome to Agent Arcade</div>
+      <div class="wel-sub">Let's create your first agent — it's quick, and you'll land right back here.</div>
+      <div class="wel-cta">▶ click the orb &nbsp;·&nbsp; or press <kbd>Enter</kbd></div>
+    </div>
+
+    <div id="strip">
+      <div class="row1" id="s-name">—</div>
+      <div class="row2" id="s-meta"></div>
+      <div id="msg"></div>
+    </div>
+    <div id="help">
+      <kbd>←</kbd> <kbd>→</kbd> select &nbsp;·&nbsp; <kbd>Enter</kbd> open &nbsp;·&nbsp; <kbd>Esc</kbd> cancel / exit
+    </div>
+
+    <!-- global recording indicator (all views) -->
+    <div id="rec-indicator"><span class="rdot"></span>REC</div>
+    <div id="toast"></div>
+
+    <!-- exit-confirm overlay (warn-on-exit) -->
+    <div id="exit-overlay">
+      <div class="confirm-card">
+        <h2>Exit Agent Arcade?</h2>
+        <div class="confirm-sub">This quits the arcade.</div>
+        <div class="confirm-btns">
+          <button class="confirm-btn" id="exit-no">No — stay</button>
+          <button class="confirm-btn danger" id="exit-yes">Yes — exit</button>
+        </div>
+        <div class="confirm-foot"><kbd>←</kbd> <kbd>→</kbd> choose &nbsp;·&nbsp; <kbd>Enter</kbd> confirm &nbsp;·&nbsp; <kbd>Esc</kbd> cancel</div>
+      </div>
+    </div>
+
+    <!-- drill-in agent view (the agent MENU — avatar + type box) -->
+    <div id="agent-view">
+      <div id="av-avatar"></div>
+      <div class="av-name" id="av-name"></div>
+      <div class="av-status" id="av-status"></div>
+      <textarea id="av-input" spellcheck="false" placeholder="type a message or /command — Enter to send · Shift+Enter newline · Esc cancel"></textarea>
+      <div id="av-msg"></div>
+      <div class="av-help" id="av-help"></div>
+    </div>
+
+    <!-- live terminal view (separate top-level container; its own left-aligned header) -->
+    <div id="term-view">
+      <div id="av-termhead"><span id="av-termtag">Live Terminal</span><span class="who" id="av-termwho"></span></div>
+      <pre id="av-term"></pre>
+      <div id="macro-bar"></div>
+      <textarea id="av-term-input" rows="1" spellcheck="false" placeholder="type a command — Enter to send · Shift+Enter newline · @ for macros · ⌘E expand"></textarea>
+      <div id="xterm-mount"></div>
+      <div class="av-help" id="term-help"></div>
+    </div>
+
+    <!-- help overlay -->
+    <div id="help-overlay">
+      <div class="help-card">
+        <h2>⌨️  Keyboard Guide</h2>
+        <h3 class="dict-row">Dictation (every view)</h3>
+        <div class="help-row dict-row"><span>Start / send dictation</span><span class="keys">⌘D</span></div>
+        <div class="help-row dict-row"><span>Cancel a recording</span><span class="keys">Esc</span></div>
+        <h3 class="watch-row">Watch window</h3>
+        <div class="help-row"><span>Pop out / focus watch window</span><span class="keys">⌘P</span></div>
+        <div class="help-foot dict-row" style="margin-top:8px;text-align:left;opacity:.55">No blind voice: dictating with no terminal visible auto-pops-out the watch window first.</div>
+        <h3>Agents (main menu)</h3>
+        <div class="help-row"><span>Move between agents</span><span class="keys">← → / 1–9</span></div>
+        <div class="help-row"><span>Move between groups</span><span class="keys">↑ ↓</span></div>
+        <div class="help-row"><span>Open an agent</span><span class="keys">Enter</span></div>
+        <div class="help-row"><span>Filter by system (if any)</span><span class="keys">f</span></div>
+        <div class="help-row"><span>Exit the arcade</span><span class="keys">Esc</span></div>
+        <h3>Agent view</h3>
+        <div class="help-row"><span>Type a message / command</span><span class="keys">i</span></div>
+        <div class="help-row"><span>Open the terminal</span><span class="keys">t</span></div>
+        <div class="help-row"><span>Switch agent (prev / next in group)</span><span class="keys">⌘ ← →</span></div>
+        <div class="help-row"><span>Back to agents</span><span class="keys">Esc</span></div>
+        <h3>Terminal view</h3>
+        <div class="help-row"><span>Send to the pane</span><span class="keys">Enter</span></div>
+        <div class="help-row"><span>Switch to prev / next agent's terminal</span><span class="keys">⌘ ← →</span></div>
+        <div class="help-row"><span>Newline (compact prompt)</span><span class="keys">Shift Enter</span></div>
+        <div class="help-row"><span>Interrupt (send Esc)</span><span class="keys">Ctrl C</span></div>
+        <div class="help-row"><span>Full-screen sync mode</span><span class="keys">⌘F</span></div>
+        <div class="help-row"><span>Open the workspace shell</span><span class="keys">⌘W</span></div>
+        <div class="help-row"><span>Expand / shrink editor</span><span class="keys">⌘E</span></div>
+        <div class="help-row"><span>Send from expanded editor (then shrink)</span><span class="keys">⌘ Enter</span></div>
+        <div class="help-row"><span>Newline in expanded editor</span><span class="keys">Enter</span></div>
+        <div class="help-row"><span>Scroll the pane</span><span class="keys">PgUp PgDn</span></div>
+        <div class="help-row"><span>Close the terminal</span><span class="keys">Esc</span></div>
+        <h3>Sync mode (full screen)</h3>
+        <div class="help-row"><span>Every keystroke → the pane (incl. Esc)</span><span class="keys">— all keys —</span></div>
+        <div class="help-row dict-row"><span>Dictate still works</span><span class="keys">⌘D</span></div>
+        <div class="help-row"><span>Leave sync mode</span><span class="keys">⌘A</span></div>
+        <h3>Workspace shell (⌘W from the terminal)</h3>
+        <div class="help-row"><span>A real shell in the agent's workspace folder</span><span class="keys">⌘W</span></div>
+        <div class="help-row"><span>Every keystroke → the shell (incl. Esc)</span><span class="keys">— all keys —</span></div>
+        <div class="help-row dict-row"><span>Dictate still works</span><span class="keys">⌘D</span></div>
+        <div class="help-row"><span>Back to the agent's terminal (the only way out)</span><span class="keys">⌘A</span></div>
+        <div class="help-foot">Esc to close this guide</div>
+      </div>
+    </div>
+
+    <!-- @-command arg picker (keyboard-driven) -->
+    <div id="macro-picker">
+      <div class="mp-card">
+        <div class="mp-cmd" id="mp-cmd"></div>
+        <div class="mp-title" id="mp-title"></div>
+        <div class="mp-desc" id="mp-desc"></div>
+        <div id="mp-body"></div>
+        <div class="mp-foot" id="mp-foot"></div>
+      </div>
+    </div>
+
+    <script src="vendor/xterm.js"></script>
+    <script src="../dist/arcade.js"></script>
+  </body>
+</html>

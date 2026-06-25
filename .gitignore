@@ -1,0 +1,20 @@
+
+# hv-managed (added by hv deck provision — idempotent)
+.claude/
+*.md
+!README.md
+
+# build + deps
+node_modules/
+studio/node_modules/
+arcade/node_modules/
+go/bin/
+wezterm-bridge/bin/
+vendor/wezterm/
+
+# bundled renderer output (esbuild)
+studio/dist/
+arcade/dist/
+
+# packaged output
+dist/
