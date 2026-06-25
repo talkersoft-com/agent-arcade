@@ -47,9 +47,16 @@ jobs:
             exit 1
           fi
 
-      # Build the app's Go bridges. These are gitignored build artifacts, included in
-      # the package via package.json "files" (which overrides .gitignore for publish).
-      - name: Build Go bridges (dictation-go + wezterm-bridge)
+      # This new source location builds the Studio (React) + Arcade (XState) bundles with
+      # esbuild via `npm run build` (the build:js stage), so CI must install deps first.
+      # The old repo shipped raw committed JS and needed no install — this `npm ci` is the
+      # ONLY addition to the otherwise byte-identical publish workflow.
+      - name: Install dependencies
+        run: npm ci
+
+      # Build the JS bundles (build:js) + the app's Go bridges. These are gitignored build
+      # artifacts, included in the package via package.json "files" (overrides .gitignore).
+      - name: Build bundles + Go bridges (build:js + dictation-go + wezterm-bridge)
         run: npm run build
 
       - name: Verify the Go binaries are present
