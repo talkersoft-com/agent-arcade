@@ -2,13 +2,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { useStore } from "../store.js";
 import { tester, accelToSymbols, eventToAccel } from "../ipc.js";
 
-const CREDITS = [
-  { name: "WezTerm", note: "GPU terminal & multiplexer · MIT", links: [["repo", "https://github.com/wez/wezterm"], ["license", "https://github.com/wez/wezterm/blob/main/LICENSE.md"]] },
-  { name: "Electron", note: "MIT", links: [["repo", "https://github.com/electron/electron"]] },
-  { name: "xterm.js", note: "MIT", links: [["repo", "https://github.com/xtermjs/xterm.js"]] },
-  { name: "node-pty", note: "MIT", links: [["repo", "https://github.com/microsoft/node-pty"]] },
-  { name: "js-yaml", note: "MIT", links: [["repo", "https://github.com/nodeca/js-yaml"]] },
-];
+// Credits now live in the macOS "About Agent Arcade Studio" window (renderer/about.html),
+// not in Preferences.
 
 export function SettingsGeneral() {
   const app = useStore((s) => s.app);
@@ -107,22 +102,6 @@ export function SettingsGeneral() {
         <button style={{ marginLeft: 6 }} onClick={scClear}>Disable</button>
       </div>
       <div className="hint">{scMsg}</div>
-
-      <div className="dict-sec" style={{ marginTop: 18 }}>Credits</div>
-      <div className="hint">Agent Arcade is built on these open-source projects.</div>
-      <div className="credits-list">
-        {CREDITS.map((c) => (
-          <div className="credit-row" key={c.name}>
-            <b>{c.name}</b> — {c.note}{"  "}
-            {c.links.map(([label, href], i) => (
-              <React.Fragment key={href}>
-                {i > 0 ? " · " : " "}
-                <a className="ext-link" onClick={(e) => { e.preventDefault(); tester.openExternal(href); }}>{label}</a>
-              </React.Fragment>
-            ))}
-          </div>
-        ))}
-      </div>
     </div>
   );
 }

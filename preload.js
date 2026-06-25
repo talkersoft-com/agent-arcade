@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld("tester", {
   getWatch: () => ipcRenderer.invoke("watch:get"),
   setWatch: (d) => ipcRenderer.invoke("watch:set", d),
   detectWezterm: () => ipcRenderer.invoke("wezterm:detect"),
+  launchWezterm: () => ipcRenderer.invoke("wezterm:launch"),
   getViewRatio: () => ipcRenderer.invoke("viewRatio:get"),
   weztermSetBounds: (b) => ipcRenderer.invoke("wezterm:setBounds", b),
   // agent programs (catalog of selectable harnesses — claude today)
