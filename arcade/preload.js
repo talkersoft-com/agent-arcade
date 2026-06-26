@@ -1,7 +1,10 @@
 // Arcade preload — the only bridge between the sandboxed renderer and main.
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("arcade", {
+  // Resolve a dropped File's absolute path. Electron 32 removed File.path; webUtils
+  // .getPathForFile is the supported replacement (must run in the preload context).
+  pathForFile: (file) => { try { return webUtils.getPathForFile(file) || ""; } catch { return ""; } },
   agents: () => ipcRenderer.invoke("arcade:agents"),
   systems: () => ipcRenderer.invoke("arcade:systems"),
   groups: () => ipcRenderer.invoke("arcade:groups"),

@@ -48,10 +48,42 @@ function setAvMsg(t, err) { const m = $("av-msg"); if (m) { m.textContent = t ||
 // 0. wiring — install the shell-push action writers + the DOM click handlers once.
 // ═══════════════════════════════════════════════════════════════════════════════
 let wired = false;
-// Per-agent terminal-prompt draft, kept in memory until the app exits (parity with the
-// agent type box). Saved on every keystroke, restored on terminal open / agent switch,
-// cleared on a successful send.
-const termDrafts = new Map(); // agentId → draft string
+// Per-agent terminal-prompt draft now lives in the per-agent XState actor
+// (agentActor context.termDraft) — the durable, single source of truth, same model as
+// the agent-view type box. These helpers read/write it through the terminal host bridge;
+// the DOM textarea is just the live editor, reflected from the actor on open / switch.
+function draftActor() { const a = currentAgent(); return a && host && host.actorFor ? host.actorFor(a.id) : null; }
+function readTermDraft() { const ac = draftActor(); return ac ? (ac.getSnapshot().context.termDraft || "") : ""; }
+function setTermDraft(text) { const ac = draftActor(); if (ac) ac.send({ type: "TERM_DRAFT.SET", text }); }
+function clearTermDraft() { const ac = draftActor(); if (ac) ac.send({ type: "TERM_DRAFT.CLEAR" }); }
+function appendTermDraft(text) { const ac = draftActor(); if (ac) ac.send({ type: "TERM_DRAFT.APPEND", text }); }
+
+// Shell-quote a path with whitespace/metacharacters so a dropped path stays a single
+// argument when the prompt is later sent as a command.
+function shqPath(p) { return /[\s'"()$&;|<>*?`\\]/.test(p) ? "'" + String(p).replace(/'/g, "'\\''") + "'" : p; }
+// Absolute path(s) from a drop: real OS file drags (Finder, VSCode Explorer) via
+// webUtils.getPathForFile; fall back to text/uri-list (VSCode editor tabs) then a plain
+// path in text/plain.
+function pathsFromDrop(e) {
+  const dt = e.dataTransfer; if (!dt) return [];
+  const out = [];
+  if (dt.files && dt.files.length && arcade.pathForFile) {
+    for (const f of dt.files) { const p = arcade.pathForFile(f); if (p) out.push(p); }
+  }
+  if (!out.length) {
+    for (const line of (dt.getData("text/uri-list") || "").split(/\r?\n/)) {
+      const u = line.trim();
+      if (!u || u.startsWith("#") || !u.startsWith("file://")) continue;
+      try { out.push(decodeURIComponent(new URL(u).pathname)); } catch {}
+    }
+  }
+  if (!out.length) {
+    const t = (dt.getData("text/plain") || "").trim();
+    if (t && (t.startsWith("/") || t.startsWith("~"))) out.push(t);
+  }
+  return out;
+}
+
 export function wireTerminal() {
   if (wired) return; wired = true;
   // The @-macro chip bar + picker click handlers (terminal peek only).
@@ -65,9 +97,34 @@ export function wireTerminal() {
   if (inp) {
     inp.addEventListener("input", autoGrow);
     inp.addEventListener("input", macroHint);
-    // Persist the draft per-agent so it survives closing/reopening the terminal.
-    inp.addEventListener("input", () => { const a = currentAgent(); if (a) termDrafts.set(a.id, inp.value); });
+    // Persist the draft per-agent (durable via the actor) so it survives close/reopen.
+    inp.addEventListener("input", () => setTermDraft(inp.value));
   }
+  // ── file drag-and-drop → append absolute path(s) to the prompt draft ──
+  // The whole terminal view is the drop zone (the small textarea alone is a poor target),
+  // but ONLY in the peek surface — never sync or shell. We hard-stop the window's default
+  // file-drop (which would navigate the renderer to the file and blank the app) and insert
+  // through the actor (TERM_DRAFT.APPEND), keeping XState the source of truth; the textarea
+  // is then reflected from it.
+  const dropAllowed = () => inPeek();                                   // peek only (false in sync/shell)
+  const overTermView = (t) => !!(t && t.closest && t.closest("#term-view"));
+  window.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    const ok = dropAllowed() && overTermView(e.target);
+    if (e.dataTransfer) e.dataTransfer.dropEffect = ok ? "copy" : "none";
+    const tv = $("term-view"); if (tv) tv.classList.toggle("drop-over", ok);
+  });
+  window.addEventListener("dragleave", (e) => {
+    if (!e.relatedTarget) { const tv = $("term-view"); if (tv) tv.classList.remove("drop-over"); }
+  });
+  window.addEventListener("drop", (e) => {
+    e.preventDefault();                                                // never let a drop navigate the window
+    const tv = $("term-view"); if (tv) tv.classList.remove("drop-over");
+    if (!dropAllowed() || !overTermView(e.target)) return;
+    const paths = pathsFromDrop(e); if (!paths.length) return;
+    appendTermDraft(paths.map(shqPath).join("\n"));                     // each path on its own line
+    const i = $("av-term-input"); if (i) { i.value = readTermDraft(); autoGrow(); i.focus(); }
+  });
   // Re-fit the live shell on resize (only while it's up).
   window.addEventListener("resize", () => { if (inShell()) fitShell(); });
 }
@@ -127,7 +184,7 @@ export async function openTerm() {
   lastTermRaw = "";
   if (term) term.send({ type: "OPEN", agentId: a.id });   // machine → peek (renders via subscription)
   refreshAvTerm(); startPoll(2500);
-  const inp = $("av-term-input"); if (inp) { inp.value = termDrafts.get(a.id) || ""; autoGrow(); inp.focus(); }
+  const inp = $("av-term-input"); if (inp) { inp.value = readTermDraft(); autoGrow(); inp.focus(); }
   // Ensure the pane is live (reuse / respawn + resume) — same guarantee as the reference.
   const res = await arcade.launchAgent(a.id);
   if (!(inPeek() && curId() === a.id)) return;             // user moved on meanwhile
@@ -149,8 +206,8 @@ export function switchTerminalInView(dir) {
   // focused agent and ensure its pane is live.
   const a = currentAgent(); if (!a) return;
   lastTermRaw = "";
-  // Restore the new agent's saved prompt draft (each agent keeps its own).
-  const inp = $("av-term-input"); if (inp) { inp.value = termDrafts.get(a.id) || ""; autoGrow(); }
+  // Restore the new agent's saved prompt draft (each agent keeps its own, in its actor).
+  const inp = $("av-term-input"); if (inp) { inp.value = readTermDraft(); autoGrow(); }
   if (term) term.send({ type: "OPEN", agentId: a.id });
   stopPoll(); refreshAvTerm();
   clearTimeout(switchTimer);
@@ -184,7 +241,7 @@ export async function sendTermInput() {
   const a = currentAgent(); const inp = $("av-term-input"); if (!inp) return;
   const text = inp.value;
   if (!a || !text.trim()) return;
-  inp.value = ""; termDrafts.delete(a.id); autoGrow();
+  inp.value = ""; clearTermDraft(); autoGrow();
   const res = await arcade.sendText(a.id, text);
   if (res && res.ok === false) {
     const m = "send failed: " + (res.error || "") + (res.code != null ? ` (exit ${res.code})` : "");
