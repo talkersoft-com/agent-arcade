@@ -15,7 +15,7 @@ import {
   pageInPane, enterSync, exitSync, syncSend, keyEventToBytes, enterShell, exitShell,
   toggleCompose, terminalUp, inSyncMode, inShellMode, inComposeMode,
   isMacroPickerOpen, macroPickerState, cancelMacroPicker, mpMove, mpAdvance,
-  startMacro, resolveMacro,
+  startMacro, resolveMacro, exactPromptMacro,
 } from "./terminal.js";
 
 // `api` is supplied by main.js: { send, focusedActor, focusedAgent, isMode, ctx }.
@@ -144,15 +144,21 @@ function onKeydown(e, api) {
         const compose = inComposeMode();
         const sendCombo = compose ? (e.metaKey || e.ctrlKey) : !e.shiftKey;
         if (sendCombo) {
-          // @-command: a clean "@name" on the first line opens the picker instead of sending.
+          // @-command: run the macro ONLY when the ENTIRE prompt is exactly "@name" and it
+          // matches (same rule as the blue highlight). "@Exec 123" / "@Exec hello" / extra
+          // text → falls through and sends as normal input.
           const ta = $("av-term-input");
-          const tok = ((((ta && ta.value) || "").split("\n")[0] || "").trim().match(/^@([\w-]+)$/) || [])[1];
           const agent = api.focusedAgent();
-          if (tok && agent) {
+          const cmd = agent ? exactPromptMacro(ta && ta.value, agent.id) : null;
+          if (cmd) {
             e.preventDefault();
-            const cmd = resolveMacro(agent.id, tok);
-            if (cmd) { if (ta) ta.value = ""; if (compose) toggleCompose(false); startMacro(cmd.name); }
-            else setAvMsg(`no @command “${tok}”`, true);
+            // Clear BOTH the textarea and the durable XState draft so the consumed "@name"
+            // doesn't reappear on re-render / agent-switch.
+            if (ta) { ta.value = ""; ta.classList.remove("macro-match"); }
+            const actor = api.focusedActor && api.focusedActor();
+            if (actor) actor.send({ type: "TERM_DRAFT.CLEAR" });
+            if (compose) toggleCompose(false);
+            startMacro(cmd.name);
             return;
           }
         }

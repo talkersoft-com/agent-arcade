@@ -419,15 +419,27 @@ function renderMacroBar() {
   barEl.innerHTML = html;
 }
 
+// Resolve a macro ONLY when the entire prompt is exactly "@<name>" (nothing else) and it
+// matches a command. This is the single rule for BOTH the blue highlight and execution:
+// "@Exec" → match; "@Exec 123" / "@Exec hello" / multi-line → no match.
+export function exactPromptMacro(value, agentId) {
+  const m = String(value || "").trim().match(/^@([\w-]+)$/);
+  return m ? resolveMacroToken(agentId, m[1]) : null;
+}
 function macroHint() {
-  if (!inPeek() || isCompose()) return;
-  const a = currentAgent(); if (!a) return;
   const inp = $("av-term-input"); if (!inp) return;
+  if (!inPeek() || isCompose()) { inp.classList.remove("macro-match"); return; }
+  const a = currentAgent(); if (!a) { inp.classList.remove("macro-match"); return; }
+  // Blue highlight: entire prompt is exactly a matching @command.
+  const exact = exactPromptMacro(inp.value, a.id);
+  inp.classList.toggle("macro-match", !!exact);
+  // Hint line while composing an "@token" (first line only, for the suggestions list).
   const m = (inp.value.split("\n")[0] || "").match(/^\s*@([\w-]*)$/);
   if (!m) return;
   const tok = m[1];
   const hits = commandsFor(a.id).filter((c) => c.name.startsWith(tok));
-  if (hits.length) setAvMsg("@ " + hits.map((c) => c.name).join("  ·  ") + "   — Enter to run");
+  if (exact) setAvMsg("@" + exact.name + " — Enter to run");
+  else if (hits.length) setAvMsg("@ " + hits.map((c) => c.name).join("  ·  ") + "   — Enter to run");
   else if (tok) setAvMsg(`no @command matches “${tok}”`, true);
   else setAvMsg("@ commands: " + (commandsFor(a.id).length ? "Enter a name" : "none for this agent"));
 }
