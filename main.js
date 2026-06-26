@@ -756,6 +756,12 @@ function launchWeztermGui() {
   }
   try { execFile("open", ["-a", "WezTerm"]); } catch {}
 }
+// Bring an already-running WezTerm GUI to the front (single-instance "Open" reuse).
+function bringWeztermToFront() {
+  return new Promise((res) => execFile("osascript", ["-e",
+    'tell application "System Events" to set frontmost of (first process whose name contains "wezterm") to true'],
+    () => res()));
+}
 // Headless-first: agents only need a reachable mux (no GUI). `wezterm cli`
 // auto-starts a wezterm-mux-server, so a successful pane-ids means the mux is up.
 // The GUI "watch" window is opened on demand from the Arcade (pop-out), not here.
@@ -1003,8 +1009,31 @@ function detectWeztermWindow() {
 }
 ipcMain.handle("wezterm:detect", () => detectWeztermWindow());
 // Open the WezTerm GUI window (Displays settings) so the user can drag it to the
-// monitor/size they want, then Capture it. Uses the app's bundled WezTerm + config.
-ipcMain.handle("wezterm:launch", () => { launchWeztermGui(); return { ok: true }; });
+// monitor/size they want, then Capture it. SINGLE-INSTANCE: repeated clicks used to
+// spawn a fresh standalone `wezterm-gui … start` each time (2nd/3rd/4th windows), which
+// also made the AppleScript resize/detect target an ambiguous "first wezterm process".
+// Now: if a GUI is already running, just focus it; otherwise bring up the shared unix
+// mux and attach exactly ONE GUI (the same model the Arcade pop-out uses), so
+// Test/Capture/Sync all act on a single, unambiguous window.
+ipcMain.handle("wezterm:launch", async () => {
+  if (await guiRunning()) { await bringWeztermToFront(); return { ok: true, reused: true }; }
+  if (await ensureMux()) {
+    const gui = resolveWeztermGui();
+    if (gui) {
+      const { cols, rows } = loadWezterm();
+      const args = ["--config-file", AA_WEZTERM_CONFIG];
+      if (cols && rows) args.push("--config", `initial_cols=${cols}`, "--config", `initial_rows=${rows}`);
+      args.push("connect", "unix");
+      try {
+        spawn(gui, args, { detached: true, stdio: "ignore", env: weztermEnv() }).unref();
+        logLine("info", `opened WezTerm (mux)${cols && rows ? ` at ${cols}×${rows}` : ""}`);
+        return { ok: true };
+      } catch (e) { logLine("err", `WezTerm open failed (${e.message}); falling back`); }
+    }
+  }
+  launchWeztermGui(); // fallback: standalone start when the mux can't be brought up
+  return { ok: true };
+});
 // Live-terminal view-box ratio (persisted by the Arcade): box size ÷ Arcade window.
 // Studio's pop-out "Sync" multiplies it by the Arcade monitor dims to get the perfect
 // WezTerm window size, so the popped-out window matches the in-Arcade view box.
