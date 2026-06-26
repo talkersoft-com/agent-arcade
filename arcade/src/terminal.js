@@ -454,7 +454,8 @@ export function startMacro(name) {
   const a = currentAgent(); if (!a) return;
   const cmd = resolveMacroToken(a.id, name);
   if (!cmd) { setAvMsg(`no @command “${name}”`, true); return; }
-  mp = { agentId: a.id, phase: cmd.args.length ? "arg" : "confirm", cmd, ai: 0, sel: 0, values: {}, textVal: "" };
+  const first = nextPromptable(cmd, 0);
+  mp = { agentId: a.id, phase: first < 0 ? "confirm" : "arg", cmd, ai: first < 0 ? 0 : first, sel: 0, values: {}, textVal: "" };
   initArgSel(); mpOpen();
 }
 function openMacroList() {
@@ -465,6 +466,12 @@ function openMacroList() {
 }
 // flag type: literal token emitted when ON; empty → "--<key>".
 function flagToken(arg) { return arg.flag || ("--" + arg.key); }
+// fixed args carry a hard-coded value and are never prompted — find the next arg
+// index the picker should actually stop on (or -1 if none remain).
+function nextPromptable(cmd, from) {
+  for (let i = Math.max(0, from); i < cmd.args.length; i++) if (cmd.args[i].type !== "fixed") return i;
+  return -1;
+}
 function initArgSel() {
   if (!mp || mp.phase !== "arg") return;
   const arg = mp.cmd.args[mp.ai];
@@ -504,8 +511,10 @@ function mpRender() {
   $("mp-title").textContent = cmd.name;
   $("mp-desc").textContent = cmd.description || "";
   if (mp.phase === "arg") {
-    const arg = cmd.args[mp.ai], n = cmd.args.length;
-    let body = `<div class="mp-step">Step ${mp.ai + 1} of ${n}</div><div class="mp-arglabel">${esc(arg.label)}</div>`;
+    const arg = cmd.args[mp.ai];
+    const n = cmd.args.filter((x) => x.type !== "fixed").length;          // fixed args aren't shown
+    const stepNum = cmd.args.slice(0, mp.ai + 1).filter((x) => x.type !== "fixed").length;
+    let body = `<div class="mp-step">Step ${stepNum} of ${n}</div><div class="mp-arglabel">${esc(arg.label)}</div>`;
     if (arg.type === "select") {
       body += arg.options.map((o, i) => `<div class="mp-opt ${i === mp.sel ? "sel" : ""}">${esc(o.label)}<span class="ov">${esc(o.value)}</span></div>`).join("");
       $("mp-body").innerHTML = body;
@@ -534,7 +543,8 @@ export function mpAdvance() {
   if (!mp) return;
   if (mp.phase === "choose") {
     const cmd = mp.list[mp.sel]; if (!cmd) return;
-    mp.cmd = cmd; mp.ai = 0; mp.values = {}; mp.sel = 0; mp.phase = cmd.args.length ? "arg" : "confirm";
+    const first = nextPromptable(cmd, 0);
+    mp.cmd = cmd; mp.ai = first < 0 ? 0 : first; mp.values = {}; mp.sel = 0; mp.phase = first < 0 ? "confirm" : "arg";
     initArgSel(); mpRender(); return;
   }
   if (mp.phase === "arg") {
@@ -545,7 +555,8 @@ export function mpAdvance() {
     else val = (($("mp-input") ? $("mp-input").value : mp.textVal) || "");
     if (arg.type !== "flag" && arg.required && val.trim() === "") return; // flags: OFF is valid
     mp.values[arg.key] = val;
-    if (mp.ai < mp.cmd.args.length - 1) { mp.ai++; mp.sel = 0; mp.textVal = ""; initArgSel(); mpRender(); return; }
+    const next = nextPromptable(mp.cmd, mp.ai + 1);
+    if (next >= 0) { mp.ai = next; mp.sel = 0; mp.textVal = ""; initArgSel(); mpRender(); return; }
     mp.phase = "confirm"; mpRender(); return;
   }
   // confirm → run
@@ -564,6 +575,7 @@ function fillTemplate(tpl, values, args) {
     if (k === "home") return "$HOME";
     if (k === "workspace") return '"${CLAUDE_CWD:-$HOME/workspace}"';
     if (k === "config") return '"${AGENT_ARCADE_HOME:-$HOME/.hv}"';
+    if (byKey[k] && byKey[k].type === "fixed") return String(byKey[k].value || "");  // fixed: verbatim, never prompted
     if (Object.prototype.hasOwnProperty.call(values, k)) {
       const v = values[k];
       if (byKey[k] && byKey[k].type === "flag") return v ? String(v) : "";  // flag: RAW token (ON) or "" (OFF)
