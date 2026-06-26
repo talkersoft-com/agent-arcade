@@ -14,12 +14,21 @@ const readline = require("readline");
 const crypto = require("node:crypto");
 const yaml = require("js-yaml");
 
-// Dev hot-reload (npm run dev → DICTATE_DEV=1): renderer changes reload the
-// window instantly; main/preload changes restart the app. Go dirs are ignored so
-// rebuilding binaries doesn't trigger a reload loop.
-if (process.env.DICTATE_DEV) {
+// Dev hot-reload: when running from the SOURCE repo (or DICTATE_DEV), renderer
+// changes reload the window instantly; main/preload changes restart the app.
+// We detect "from source" by the presence of studio/src — the published package
+// ships only studio/dist, so this never activates in a user's npm install (where
+// app.isPackaged would be unreliable, since it runs via `electron .`). Raw sources
+// are ignored; esbuild's --watch rebuilds dist/, and THAT change triggers the reload.
+const RUNNING_FROM_SOURCE = (() => {
+  try { return require("fs").existsSync(require("path").join(__dirname, "studio", "src", "main.jsx")); }
+  catch { return false; }
+})();
+if (process.env.DICTATE_DEV || RUNNING_FROM_SOURCE) {
   try {
-    require("electron-reloader")(module, { ignore: ["go", "wezterm-bridge", "recordings"] });
+    require("electron-reloader")(module, {
+      ignore: ["go", "wezterm-bridge", "recordings", "node_modules", "studio/src", "arcade/src"],
+    });
   } catch (e) {
     console.error("[main] hot-reload disabled:", e.message);
   }
@@ -756,11 +765,28 @@ function launchWeztermGui() {
   }
   try { execFile("open", ["-a", "WezTerm"]); } catch {}
 }
-// Bring an already-running WezTerm GUI to the front (single-instance "Open" reuse).
-function bringWeztermToFront() {
-  return new Promise((res) => execFile("osascript", ["-e",
-    'tell application "System Events" to set frontmost of (first process whose name contains "wezterm") to true'],
-    () => res()));
+// Bring the WezTerm GUI fully forward: frontmost + UN-MINIMIZE + raise its window. A
+// fresh `connect unix` window (or one the user minimized to the Dock) otherwise stays
+// hidden — frontmost alone won't un-minimize it.
+function raiseWezterm() {
+  const script = [
+    'tell application "System Events"',
+    '  set ps to (every process whose name contains "wezterm")',
+    '  if (count of ps) is 0 then return',
+    '  set p to item 1 of ps',
+    '  set frontmost of p to true',
+    '  try',
+    '    if (count of windows of p) > 0 then',
+    '      set w to window 1 of p',
+    '      try',
+    '        set value of attribute "AXMinimized" of w to false',
+    '      end try',
+    '      perform action "AXRaise" of w',
+    '    end if',
+    '  end try',
+    'end tell',
+  ].join("\n");
+  return new Promise((res) => execFile("osascript", ["-e", script], () => res()));
 }
 // Headless-first: agents only need a reachable mux (no GUI). `wezterm cli`
 // auto-starts a wezterm-mux-server, so a successful pane-ids means the mux is up.
@@ -1015,8 +1041,8 @@ ipcMain.handle("wezterm:detect", () => detectWeztermWindow());
 // Now: if a GUI is already running, just focus it; otherwise bring up the shared unix
 // mux and attach exactly ONE GUI (the same model the Arcade pop-out uses), so
 // Test/Capture/Sync all act on a single, unambiguous window.
-ipcMain.handle("wezterm:launch", async () => {
-  if (await guiRunning()) { await bringWeztermToFront(); return { ok: true, reused: true }; }
+async function ensureWeztermGuiUp() {
+  if (await guiRunning()) { await raiseWezterm(); return { ok: true, reused: true }; }
   if (await ensureMux()) {
     const gui = resolveWeztermGui();
     if (gui) {
@@ -1027,13 +1053,19 @@ ipcMain.handle("wezterm:launch", async () => {
       try {
         spawn(gui, args, { detached: true, stdio: "ignore", env: weztermEnv() }).unref();
         logLine("info", `opened WezTerm (mux)${cols && rows ? ` at ${cols}×${rows}` : ""}`);
+        // Wait for the new window to attach, then bring it forward (it opens in the
+        // background / minimized otherwise).
+        for (let i = 0; i < 12; i++) { await delay(300); if (await guiRunning()) break; }
+        await delay(300); await raiseWezterm();
         return { ok: true };
       } catch (e) { logLine("err", `WezTerm open failed (${e.message}); falling back`); }
     }
   }
   launchWeztermGui(); // fallback: standalone start when the mux can't be brought up
+  await delay(800); await raiseWezterm();
   return { ok: true };
-});
+}
+ipcMain.handle("wezterm:launch", () => ensureWeztermGuiUp());
 // Live-terminal view-box ratio (persisted by the Arcade): box size ÷ Arcade window.
 // Studio's pop-out "Sync" multiplies it by the Arcade monitor dims to get the perfect
 // WezTerm window size, so the popped-out window matches the in-Arcade view box.
@@ -1061,6 +1093,113 @@ function setWeztermBounds(x, y, w, h) {
 ipcMain.handle("wezterm:setBounds", (_e, b) => setWeztermBounds(
   parseInt(b && b.x, 10) || 0, parseInt(b && b.y, 10) || 0,
   parseInt(b && b.w, 10) || 0, parseInt(b && b.h, 10) || 0));
+
+// ── One-button "Open & fit terminal to Arcade view" ───────────────────────────
+// The whole pop-out-placement job, atomically: bring up exactly one WezTerm GUI,
+// compute the window size from the chosen monitor × the live Arcade view ratio,
+// CENTER it on that monitor, apply position+size, and PERSIST it as watch_display so
+// the real ⌘P pop-out (arcade/main.js positionWatchWindow) reproduces it. Replaces the
+// old Sync→Test→Capture→Save dance — each of those was one step of this.
+//   opts.monitor: "x,y" key of the target display, or "" / missing → the Arcade's
+//                 configured monitor, else the primary.
+ipcMain.handle("wezterm:fit", async (_e, opts) => {
+  const ratio = readDoc().view_ratio || {};
+  if (!(ratio.w > 0) || !(ratio.h > 0)) return { ok: false, reason: "no-ratio" };
+
+  const all = screen.getAllDisplays();
+  const ad = readDoc().display;
+
+  // SIZE basis = the ARCADE monitor (the display the Arcade runs fullscreen on). The
+  // pop-out must match the terminal VIEW AREA inside that Arcade, so W×H = Arcade
+  // monitor × view ratio — e.g. 1728×1117 × 0.809/0.887 = 1398×991. The placement
+  // monitor below only decides WHERE the window lands; it NEVER affects the size.
+  let aw = ad && Number.isFinite(ad.monitor_w) ? ad.monitor_w : 0;
+  let ah = ad && Number.isFinite(ad.monitor_h) ? ad.monitor_h : 0;
+  if (!aw || !ah) { const p = screen.getPrimaryDisplay(); aw = p.bounds.width; ah = p.bounds.height; }
+  const w = Math.round(aw * ratio.w), h = Math.round(ah * ratio.h);
+
+  // Bring up / focus the single GUI first.
+  await ensureWeztermGuiUp();
+
+  // W/H-ONLY: resize to the Arcade view size, but DO NOT move the window — keep its
+  // CURRENT x/y so the user's placement is preserved (per request). Read the live window
+  // position; only when that's unavailable (e.g. a brand-new window with no readable
+  // position) fall back to centering on the chosen monitor (pick → Arcade monitor → primary).
+  const cur = await detectWeztermWindow();
+  let x, y;
+  if (cur && cur.ok) {
+    x = cur.x; y = cur.y;
+  } else {
+    const key = opts && typeof opts.monitor === "string" ? opts.monitor.trim() : "";
+    let disp = null;
+    if (key) { const [kx, ky] = key.split(",").map(Number); disp = all.find((d) => d.bounds.x === kx && d.bounds.y === ky) || null; }
+    if (!disp && ad && Number.isFinite(ad.monitor_x)) disp = all.find((d) => d.bounds.x === ad.monitor_x && d.bounds.y === ad.monitor_y) || null;
+    if (!disp) disp = screen.getPrimaryDisplay();
+    const b = disp.bounds;
+    x = Math.round(b.x + (b.width - w) / 2); y = Math.round(b.y + (b.height - h) / 2);
+  }
+
+  const r = await setWeztermBounds(x, y, w, h);
+  if (!r.ok) return { ok: false, reason: r.reason || "error", error: r.error };
+
+  // Persist so ⌘P reproduces this exact size (and the preserved position).
+  const doc = readDoc();
+  doc.watch_display = { monitor_x: x, monitor_y: y, monitor_w: w, monitor_h: h };
+  writeDoc(doc);
+  const idx = all.findIndex((d) => x >= d.bounds.x && x < d.bounds.x + d.bounds.width && y >= d.bounds.y && y < d.bounds.y + d.bounds.height);
+  logLine("info", `pop-out fitted (size only) → ${w}×${h} @ ${x},${y}`);
+  return { ok: true, x, y, w, h, display: idx >= 0 ? `Display ${idx + 1}` : "" };
+});
+
+// ── Center the pop-out on a monitor ───────────────────────────────────────────
+// KEEPS the window's current SIZE; only moves it to the center of the target monitor
+// (explicit "Watch on monitor" pick → the monitor it's currently on → primary). Persists.
+ipcMain.handle("wezterm:center", async (_e, opts) => {
+  await ensureWeztermGuiUp();
+  const cur = await detectWeztermWindow();
+  if (!cur || !cur.ok) return { ok: false, reason: (cur && cur.reason) || "not-running" };
+  const all = screen.getAllDisplays();
+  const key = opts && typeof opts.monitor === "string" ? opts.monitor.trim() : "";
+  let disp = null;
+  if (key) { const [kx, ky] = key.split(",").map(Number); disp = all.find((d) => d.bounds.x === kx && d.bounds.y === ky) || null; }
+  if (!disp) disp = all.find((d) => cur.x >= d.bounds.x && cur.x < d.bounds.x + d.bounds.width && cur.y >= d.bounds.y && cur.y < d.bounds.y + d.bounds.height) || null;
+  if (!disp) disp = screen.getPrimaryDisplay();
+  const b = disp.bounds;
+  const x = Math.round(b.x + (b.width - cur.w) / 2), y = Math.round(b.y + (b.height - cur.h) / 2);
+  const r = await setWeztermBounds(x, y, cur.w, cur.h);
+  if (!r.ok) return { ok: false, reason: r.reason || "error", error: r.error };
+  const doc = readDoc();
+  doc.watch_display = { monitor_x: x, monitor_y: y, monitor_w: cur.w, monitor_h: cur.h };
+  writeDoc(doc);
+  const idx = all.indexOf(disp);
+  logLine("info", `pop-out centered → ${cur.w}×${cur.h} @ ${x},${y} (Display ${idx + 1})`);
+  return { ok: true, x, y, w: cur.w, h: cur.h, display: idx >= 0 ? `Display ${idx + 1}` : "" };
+});
+
+// ── macOS Automation permission (Apple Events → System Events) ──
+// Capture / Test size / pop-out all drive WezTerm through System Events, which needs the
+// app to hold "Automation" permission. We can't query TCC directly, so we PROBE: run a
+// harmless System Events event. Success = granted; the -1743 error = denied or not-yet-
+// decided (running it also surfaces the first-time consent dialog when undecided).
+function probeAutomation() {
+  const script = 'tell application "System Events" to get name of first process';
+  return new Promise((res) => execFile("osascript", ["-e", script], (e, _o, se) => {
+    if (!e) return res({ state: "granted" });
+    const s = String(se || "");
+    res({ state: /-1743|not allowed|not authoriz/i.test(s) ? "denied" : "error", error: s.trim() });
+  }));
+}
+ipcMain.handle("perm:automation:check", () => probeAutomation());
+// Trigger the consent dialog (when undecided). macOS will NOT re-prompt after a prior
+// deny, so if it's still not granted we open System Settings → Automation so the user can
+// toggle it on manually. Returns the resulting state for the UI.
+ipcMain.handle("perm:automation:request", async () => {
+  const r = await probeAutomation();
+  if (r.state !== "granted") {
+    try { execFile("open", ["x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"]); } catch {}
+  }
+  return r;
+});
 // ── Systems IPC (CRUD over the YAML store) ─────────────────────────────────────
 ipcMain.handle("programs:list", () => loadAgentPrograms());
 ipcMain.handle("systems:list", () => loadSystems());

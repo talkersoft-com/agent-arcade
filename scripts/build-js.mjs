@@ -1,13 +1,15 @@
 // Bundles the renderer entrypoints with esbuild.
 //   studio/src/main.jsx -> studio/dist/studio.js  (React, JSX, IIFE)
 //   arcade/src/main.js  -> arcade/dist/arcade.js  (vanilla, IIFE)
-// Run via `npm run build:js`.
-import { build } from "esbuild";
+// Run via `npm run build:js`  (one-shot)
+//      or `npm run build:js -- --watch`  (rebuild on save — dev hot-reload).
+import { build, context } from "esbuild";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const prod = process.env.NODE_ENV === "production";
+const watch = process.argv.includes("--watch");
 
 const common = {
   bundle: true,
@@ -19,8 +21,8 @@ const common = {
   logLevel: "info",
 };
 
-await Promise.all([
-  build({
+const configs = [
+  {
     ...common,
     entryPoints: [resolve(root, "studio/src/main.jsx")],
     outfile: resolve(root, "studio/dist/studio.js"),
@@ -32,10 +34,20 @@ await Promise.all([
     define: {
       "process.env.NODE_ENV": JSON.stringify(prod ? "production" : "development"),
     },
-  }),
-  build({
+  },
+  {
     ...common,
     entryPoints: [resolve(root, "arcade/src/main.js")],
     outfile: resolve(root, "arcade/dist/arcade.js"),
-  }),
-]);
+  },
+];
+
+if (watch) {
+  // Watch mode: rebuild dist/* on every source save. Paired with electron-reloader
+  // (active when running from source), the renderer reloads automatically.
+  const ctxs = await Promise.all(configs.map((c) => context(c)));
+  await Promise.all(ctxs.map((c) => c.watch()));
+  console.log("[build-js] watching studio/ + arcade/ for changes — edit and save to rebuild.");
+} else {
+  await Promise.all(configs.map((c) => build(c)));
+}

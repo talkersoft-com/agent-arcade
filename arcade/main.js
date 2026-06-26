@@ -326,6 +326,15 @@ function axPos() {
     res(m ? { x: +m[1], y: +m[2] } : null);
   }));
 }
+// Resize the front WezTerm window to {w, h} (pixels). Same Automation path as axMove.
+// The pop-out's saved pixel size (watch_display.monitor_w/h, computed by Studio's
+// "fit to Arcade view") is applied here so the popped-out window matches the Arcade's
+// embedded terminal box — position alone was never enough.
+function axSize(w, h) {
+  const script = `tell application "System Events" to tell (first process whose name contains "wezterm") to set size of front window to {${w}, ${h}}`;
+  return new Promise((res) => execFile("osascript", ["-e", script], (e, _o, se) =>
+    res({ ok: !e, denied: /-1743|not allow|not authoriz/i.test(String(se || "")) })));
+}
 // Returns { ok, reason }. Driving System Events from Electron needs *Automation*
 // permission ("<app> wants to control System Events"), NOT the Accessibility API —
 // so we don't pre-check a flag (that checks the wrong permission and can misreport).
@@ -355,7 +364,14 @@ async function positionWatchWindow() {
     }
     await delay(200);
     const p = await axPos();
-    if (p && Math.abs(p.x - x) <= 40) { await axActivate(); return { ok: true }; }
+    if (p && Math.abs(p.x - x) <= 40) {
+      // Landed on the right monitor — now match the saved pixel size (the "fit to
+      // Arcade view" result). Size is best-effort: a failure here doesn't undo the move.
+      const w = Math.round(d.monitor_w), h = Math.round(d.monitor_h);
+      if (w > 0 && h > 0) { await axSize(w, h); }
+      await axActivate();
+      return { ok: true };
+    }
   }
   // Granted, but the window didn't land where asked (rare). Not a permission issue,
   // so don't nag about System Events.

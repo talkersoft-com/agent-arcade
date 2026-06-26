@@ -27,6 +27,16 @@ contextBridge.exposeInMainWorld("tester", {
   launchWezterm: () => ipcRenderer.invoke("wezterm:launch"),
   getViewRatio: () => ipcRenderer.invoke("viewRatio:get"),
   weztermSetBounds: (b) => ipcRenderer.invoke("wezterm:setBounds", b),
+  // One-button: open WezTerm + size it to the Arcade view on the chosen monitor +
+  // persist (opts.monitor = "x,y" of the target display, or "" for the Arcade monitor).
+  weztermFit: (opts) => ipcRenderer.invoke("wezterm:fit", opts),
+  // Center the live WezTerm window on the chosen monitor — keeps its size, only moves it.
+  weztermCenter: (opts) => ipcRenderer.invoke("wezterm:center", opts),
+  // macOS Automation (Apple Events → System Events) permission — needed for
+  // Capture/Test/pop-out. check = probe status; request = surface the prompt and,
+  // if not granted, open System Settings → Privacy & Security → Automation.
+  permCheck: () => ipcRenderer.invoke("perm:automation:check"),
+  permRequest: () => ipcRenderer.invoke("perm:automation:request"),
   // agent programs (catalog of selectable harnesses — claude today)
   agentPrograms: () => ipcRenderer.invoke("programs:list"),
   // systems (machines that host agents)

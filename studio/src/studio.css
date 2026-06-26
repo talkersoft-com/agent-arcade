@@ -115,8 +115,47 @@
       /* Preferences: light card grouping a Displays section */
       .disp-group { border: 1px solid rgba(128,128,128,0.25); border-radius: 10px;
         padding: 12px 15px; margin-top: 10px; }
-      .disp-group > .row + .row, .disp-group > .row + .hint { margin-top: 8px; }
+      .disp-group > .row + .row, .disp-group > .row + .hint,
+      .disp-group > .hint + .row, .disp-group > .hint + .hint { margin-top: 8px; }
       .disp-group .row > label:first-child { flex: 0 0 150px; }
+      /* Pop-out "Open & fit" action + its Advanced drawer */
+      .disp-action { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+      .disp-action .grow { flex: 1 1 220px; min-width: 180px; }
+      .disp-fit-btn { background: #2b6cb0; font-weight: 700; padding: 9px 16px; }
+      .disp-warn { display: flex; align-items: center; gap: 10px; padding: 9px 12px; margin-top: 8px;
+        border: 1px solid rgba(224,168,0,0.5); background: rgba(224,168,0,0.08); border-radius: 8px; }
+      .disp-warn .msg { flex: 1; font-size: 12.5px; color: #e0a800; }
+      .disp-adv-toggle { background: transparent; color: inherit; border: none; font-weight: 600;
+        opacity: 0.75; padding: 6px 0; margin-top: 6px; }
+      .disp-adv-toggle:hover { opacity: 1; }
+      .disp-adv { margin-top: 4px; padding: 12px 14px; border: 1px dashed rgba(128,128,128,0.3);
+        border-radius: 8px; display: flex; flex-direction: column; gap: 10px; }
+      .disp-adv .row { gap: 8px; }
+      .disp-adv .btnrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      /* pop-out terminal — actions/diagnostics as a list of rows (scales as more land) */
+      .disp-actions { margin-top: 18px; padding-top: 8px; border-top: 1px solid rgba(128,128,128,0.18); }
+      .disp-act-row { display: flex; align-items: center; gap: 12px; padding: 14px 4px;
+        border-bottom: 1px solid rgba(128,128,128,0.12); }
+      .disp-act-row:last-child { border-bottom: none; }
+      .disp-act-row.is-primary { background: rgba(43,108,176,0.08); border-radius: 8px;
+        margin: 6px 0; padding: 14px 12px; border-bottom: none; }
+      .disp-act-icon { flex: 0 0 22px; text-align: center; font-size: 15px; opacity: 0.85; }
+      .disp-act-main { flex: 1 1 auto; min-width: 0; }
+      .disp-act-name { font-size: 13.5px; font-weight: 600; }
+      .disp-act-sub { font-size: 11.5px; opacity: 0.55; margin-top: 1px; }
+      .disp-act-trail { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; }
+      .disp-act-btn { background: #1b2230; border: 1px solid rgba(255,255,255,0.16); color: #e6e9ef;
+        font-weight: 600; padding: 7px 14px; border-radius: 8px; cursor: pointer; }
+      .disp-act-btn:hover { background: #232c3d; }
+      .disp-act-btn.primary { background: #2b6cb0; border-color: #2b6cb0; color: #fff; }
+      .disp-act-btn.primary:hover { background: #2f78c4; }
+      .disp-act-btn.danger { color: #fff; border-color: rgba(229,62,62,0.40); }
+      .disp-act-btn.danger:hover { background: rgba(229,62,62,0.12); }
+      .disp-chip { font-size: 11px; padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+        background: rgba(128,128,128,0.18); color: #cdd3de; }
+      .disp-chip.ok { background: rgba(60,180,90,0.18); color: #6fd08a; }
+      .disp-chip.warn { background: rgba(229,168,0,0.18); color: #e0a800; }
+      .disp-result { margin-top: 10px; font-size: 12px; opacity: 0.72; min-height: 15px; }
       /* generic modal */
       .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100;
         display: none; align-items: center; justify-content: center; }

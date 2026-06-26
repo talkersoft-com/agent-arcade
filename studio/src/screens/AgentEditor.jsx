@@ -346,7 +346,6 @@ function Diagnostics({ editing }) {
 
   const [msg, setMsg] = useState("");
   const [msgErr, setMsgErr] = useState(false);
-  const [diagOpen, setDiagOpen] = useState(false);
   const [termHidden, setTermHidden] = useState(localStorage.getItem("aa_term_hidden") !== "0");
   const [termText, setTermText] = useState("");
   const [recording, setRecording] = useState(false);
@@ -456,32 +455,67 @@ function Diagnostics({ editing }) {
         {"  ·  "}
         {a.cwd ? a.cwd : "~/workspace"}
       </div>
-      <div className="detail-actions">
-        {run
-          ? <button className="secondary" onClick={() => act("popout")}>⤢ Pop out terminal</button>
-          : <button onClick={() => act("launch")}>{a.session_id ? "Resume" : "Launch"}</button>}
-      </div>
+      <div className="disp-actions">
+        <div className="disp-act-row">
+          <span className="disp-act-icon">{run ? "⤢" : "▶"}</span>
+          <div className="disp-act-main">
+            <div className="disp-act-name">{run ? "Pop out terminal" : (a.session_id ? "Resume agent" : "Launch agent")}</div>
+            <div className="disp-act-sub">{run
+              ? "Open this agent’s terminal in its own WezTerm window."
+              : (a.session_id ? "Resume the saved session in a new pane." : "Start this agent in a new pane.")}</div>
+          </div>
+          <div className="disp-act-trail">
+            {run
+              ? <button className="disp-act-btn" onClick={() => act("popout")}>Pop out</button>
+              : <button className="disp-act-btn" onClick={() => act("launch")}>{a.session_id ? "Resume" : "Launch"}</button>}
+          </div>
+        </div>
 
-      <div className="dictate-area">
-        {dictationAvailable && (recording
-          ? <>
-              <span><span className="pulse" />Recording…</span>
-              <button className="ghost" onClick={dictateCancel}>Cancel (Esc)</button>
-              <button onClick={dictateSend}>Send ▶ (⌘D)</button>
-            </>
-          : <button className="dictate-btn" onClick={dictateStart}>🎙 Dictate (⌘D)</button>)}
+        {dictationAvailable && (
+          <div className="disp-act-row">
+            <span className="disp-act-icon">🎙</span>
+            <div className="disp-act-main">
+              <div className="disp-act-name">{recording ? <><span className="pulse" /> Recording…</> : "Dictate (⌘D)"}</div>
+              <div className="disp-act-sub">{recording ? "⌘D to send · Esc to cancel." : "Speak a message — transcribed and sent to this agent."}</div>
+            </div>
+            <div className="disp-act-trail">
+              {recording
+                ? <>
+                    <button className="disp-act-btn" onClick={dictateCancel}>Cancel</button>
+                    <button className="disp-act-btn" onClick={dictateSend}>Send ▶</button>
+                  </>
+                : <button className="disp-act-btn" onClick={dictateStart}>Dictate</button>}
+            </div>
+          </div>
+        )}
+
+        {run && (
+          <>
+            <div className="disp-act-row">
+              <span className="disp-act-icon">⎋</span>
+              <div className="disp-act-main">
+                <div className="disp-act-name">Send Esc</div>
+                <div className="disp-act-sub">Send an Escape keypress to the agent’s terminal.</div>
+              </div>
+              <div className="disp-act-trail">
+                <button className="disp-act-btn" onClick={() => act("esc")}>Send Esc</button>
+              </div>
+            </div>
+
+            <div className="disp-act-row">
+              <span className="disp-act-icon">⨯</span>
+              <div className="disp-act-main">
+                <div className="disp-act-name">Kill process</div>
+                <div className="disp-act-sub">Stop the running process — the session is kept and can be resumed.</div>
+              </div>
+              <div className="disp-act-trail">
+                <button className="disp-act-btn danger" onClick={() => act("kill")}>Kill</button>
+              </div>
+            </div>
+          </>
+        )}
       </div>
       <div className="hint" style={{ minHeight: 16, color: msgErr ? "#e53e3e" : "" }}>{msg}</div>
-
-      {run && (
-        <details className="diag" open={diagOpen} onToggle={(e) => setDiagOpen(e.target.open)}>
-          <summary>Diagnostics</summary>
-          <div className="row" style={{ gap: 8, marginTop: 8, paddingLeft: 2 }}>
-            <button className="secondary" onClick={() => act("esc")}>⎋ Send Esc</button>
-            <button className="danger" onClick={() => act("kill")}>⨯ Kill (session kept)</button>
-          </div>
-        </details>
-      )}
 
       {run && (
         <div style={{ marginTop: 8 }}>
