@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { useStore } from "../store.js";
 import { tester } from "../ipc.js";
 
@@ -8,15 +8,46 @@ export function SettingsDisplays() {
   const watch = useStore((s) => s.watch);
   const wezterm = useStore((s) => s.wezterm);
 
-  // monitor select value
+  // Arcade monitor select value
   const curKey = display && Number.isFinite(display.monitor_x) ? `${display.monitor_x},${display.monitor_y}` : "";
 
-  // watch (pop-out) editable fields
+  // ── pop-out terminal ──
+  // The single source of truth for placement is watch_display in the YAML; the one
+  // "Fit" action computes the size from the Arcade view and persists it. The X/Y/W/H
+  // fields below are a manual override (Advanced), seeded once from the saved value.
+  const [watchMon, setWatchMon] = useState("");   // target display key "x,y" ("" = Same as Arcade)
+  const [fitMsg, setFitMsg] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
   const [wx, setWx] = useState("");
   const [wy, setWy] = useState("");
   const [ww, setWw] = useState("");
   const [wh, setWh] = useState("");
-  useEffect(() => { fillWatch(watch); }, [watch]);
+  const [cols, setCols] = useState("");
+  const [rows, setRows] = useState("");
+
+  // Seed the editable drafts from the saved values ONCE (the store loads async). Never
+  // re-sync on later store refreshes — that used to clobber in-progress edits. Explicit
+  // actions own the drafts from here on (Fit / Capture set them; Apply re-reads them).
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (seeded.current) return;
+    if (watch && Number.isFinite(watch.monitor_x)) {
+      fillWatch(watch);
+      // reflect which monitor the saved window sits on, into the dropdown
+      const s = (screens || []).find((s) => watch.monitor_x >= s.x && watch.monitor_x < s.x + s.w && watch.monitor_y >= s.y && watch.monitor_y < s.y + s.h);
+      if (s) setWatchMon(`${s.x},${s.y}`);
+      seeded.current = true;
+    }
+  }, [watch, screens]);
+  const gridSeeded = useRef(false);
+  useEffect(() => {
+    if (gridSeeded.current) return;
+    if (wezterm && (wezterm.cols || wezterm.rows)) {
+      setCols(wezterm.cols || ""); setRows(wezterm.rows || ""); gridSeeded.current = true;
+    }
+  }, [wezterm]);
+
   function fillWatch(w) {
     const has = w && Number.isFinite(w.monitor_x);
     setWx(has ? w.monitor_x : ""); setWy(has ? w.monitor_y : "");
@@ -28,30 +59,21 @@ export function SettingsDisplays() {
     return { monitor_x: x, monitor_y: y, monitor_w: Number.isFinite(w) ? w : 0, monitor_h: Number.isFinite(h) ? h : 0 };
   }
 
-  const [wezSyncStatus, setWezSyncStatus] = useState("Checking for WezTerm…");
-  const [wezGeom, setWezGeom] = useState(null);
-  const [wezSaved, setWezSaved] = useState("");
-  const [cols, setCols] = useState(wezterm && wezterm.cols ? wezterm.cols : "");
-  const [rows, setRows] = useState(wezterm && wezterm.rows ? wezterm.rows : "");
-  useEffect(() => { setCols(wezterm && wezterm.cols ? wezterm.cols : ""); setRows(wezterm && wezterm.rows ? wezterm.rows : ""); }, [wezterm]);
-
-  // detect live WezTerm on mount (the Displays tab is mounted only when active)
-  useEffect(() => { refreshWeztermSync(); }, []);
-  async function refreshWeztermSync() {
-    setWezSyncStatus("Checking for WezTerm…"); setWezGeom(null);
-    const d = await tester.detectWezterm();
-    if (d && d.ok) { setWezSyncStatus(`● Terminal detected · ${d.w}×${d.h} @ ${d.x},${d.y} (${d.display})`); setWezGeom(d); }
-    else if (d && d.reason === "permission") setWezSyncStatus("⚠ Automation permission needed — grant System Events.");
-    else setWezSyncStatus("○ WezTerm not running — click “Open WezTerm”, position it, then Capture.");
+  // ── macOS Automation permission (System Events) ──
+  // Probe silently on mount; the permission row shows a status chip. The Fit / Capture /
+  // Apply actions also flip this when they hit a permission error, so it self-surfaces.
+  const [perm, setPerm] = useState("");
+  async function checkPerm() {
+    setPerm("checking");
+    const r = await tester.permCheck();
+    setPerm((r && r.state) || "");
   }
-
-  // Open the WezTerm GUI window so the user can drag it to the monitor/size they want,
-  // then auto-detect it (which enables Capture current).
-  async function openWezterm() {
-    setWezSyncStatus("◌ opening WezTerm — drag it where you want it, then Capture…");
-    try { await tester.launchWezterm(); } catch {}
-    setTimeout(refreshWeztermSync, 1800); // give the GUI a moment to appear, then detect it
+  async function requestPerm() {
+    setPerm("checking");
+    const r = await tester.permRequest();   // surfaces the prompt; opens Settings if still not granted
+    setPerm((r && r.state) || "error");
   }
+  useEffect(() => { checkPerm(); }, []);
 
   async function onMonitorChange(e) {
     const val = e.target.value;
@@ -63,62 +85,79 @@ export function SettingsDisplays() {
     useStore.setState({ display: d });
   }
 
-  async function watchSave() {
-    const v = readWatch();
-    if (!v) return;
-    await tester.setWatch(v);
-    const w = await tester.getWatch();
-    useStore.setState({ display: await tester.getDisplay(), watch: w || {} });
-  }
-  async function watchReset() {
-    await tester.setWatch(null);
-    useStore.setState({ watch: await tester.getWatch() || {} });
-  }
-  // Read the WezTerm window's CURRENT position+size (fresh detect, so it reflects
-  // wherever you just dragged it) into the fields.
-  async function capture() {
-    setWezSaved("◌ reading WezTerm window…");
-    const d = await tester.detectWezterm();
-    if (!d || !d.ok) {
-      if (d && d.reason === "permission") setWezSaved("⚠ Automation permission needed — grant System Events, then retry.");
-      else setWezSaved("⚠ No WezTerm window found — click “↗ Open WezTerm” first, position it, then Capture.");
+  // THE action: open WezTerm, resize it to the Arcade view (W×H) WITHOUT moving it
+  // (keeps its current position), then persist.
+  async function fitToArcade() {
+    setFitMsg("◌ opening & fitting WezTerm…");
+    const r = await tester.weztermFit({ monitor: watchMon });
+    if (!r || !r.ok) {
+      if (r && r.reason === "no-ratio") setFitMsg("⚠ Open the Arcade’s Live Terminal once first — it has no view size to match yet.");
+      else if (r && r.reason === "permission") { setPerm("denied"); setFitMsg("⚠ macOS is blocking window control — grant access in the row above, then retry."); }
+      else if (r && r.reason === "not-running") setFitMsg("○ No WezTerm window available — try again.");
+      else setFitMsg("⚠ Couldn’t fit the terminal.");
       return;
     }
-    setWezGeom(d);
+    fillWatch({ monitor_x: r.x, monitor_y: r.y, monitor_w: r.w, monitor_h: r.h });
+    useStore.setState({ watch: (await tester.getWatch()) || {} });
+    setPerm("granted");   // it worked → permission is fine
+    setFitMsg(`✓ resized to ${r.w}×${r.h} on ${r.display} (position kept) · saved`);
+  }
+
+  // Center the live window on the chosen monitor — keeps its current SIZE, only moves it.
+  async function centerWindow() {
+    setFitMsg("◌ centering WezTerm…");
+    const r = await tester.weztermCenter({ monitor: watchMon });
+    if (!r || !r.ok) {
+      if (r && r.reason === "permission") { setPerm("denied"); setFitMsg("⚠ macOS is blocking window control — grant access in the row below, then retry."); }
+      else if (r && r.reason === "not-running") setFitMsg("○ No WezTerm window available — open it first.");
+      else setFitMsg("⚠ Couldn’t center the terminal.");
+      return;
+    }
+    fillWatch({ monitor_x: r.x, monitor_y: r.y, monitor_w: r.w, monitor_h: r.h });
+    useStore.setState({ watch: (await tester.getWatch()) || {} });
+    setPerm("granted");
+    setFitMsg(`✓ centered on ${r.display} (size kept) · saved`);
+  }
+
+  // Advanced: read the live window's current geometry into the fields (manual flow).
+  async function captureCurrent() {
+    setFitMsg("◌ reading WezTerm window…");
+    const d = await tester.detectWezterm();
+    if (!d || !d.ok) {
+      if (d && d.reason === "permission") { setPerm("denied"); setFitMsg("⚠ macOS is blocking window control — grant access in the row above."); }
+      else setFitMsg("○ No WezTerm window — use “Fit” first, then drag it.");
+      return;
+    }
     fillWatch({ monitor_x: d.x, monitor_y: d.y, monitor_w: d.w, monitor_h: d.h });
-    setWezSaved(`captured ${d.w}×${d.h} @ ${d.x},${d.y} into the fields — review, then Save`);
+    setFitMsg(`read ${d.w}×${d.h} @ ${d.x},${d.y} into fields — Apply & save to keep`);
   }
-  async function syncToArcade() {
-    const [ratio, disp, scr] = await Promise.all([tester.getViewRatio(), tester.getDisplay(), tester.listScreens()]);
-    if (!ratio || !(ratio.w > 0) || !(ratio.h > 0)) { setWezSaved("⚠ no view ratio yet — open the Arcade's Live Terminal once, then Sync"); return; }
-    let mw = disp && Number.isFinite(disp.monitor_w) ? disp.monitor_w : 0;
-    let mh = disp && Number.isFinite(disp.monitor_h) ? disp.monitor_h : 0;
-    if (!mw || !mh) { const p = (scr || []).find((s) => s.primary) || (scr || [])[0]; if (p) { mw = p.w; mh = p.h; } }
-    if (!mw || !mh) return;
-    const w = Math.round(mw * ratio.w), h = Math.round(mh * ratio.h);
-    setWw(w); setWh(h);
-    setWezSaved(`🧮 synced → ${w}×${h}  (${mw}×${mh} × ${ratio.w}/${ratio.h}) · Test, then Save`);
-  }
-  async function testSize() {
+
+  // Advanced: apply the manual X/Y/W/H to the live window AND persist (window + grid).
+  async function applyAdvanced() {
     const v = readWatch();
-    if (!v) { setWezSaved("⚠ X and Y are required"); return; }
-    if (!(v.monitor_w > 0 && v.monitor_h > 0)) { setWezSaved("⚠ set W and H first (Sync or Capture)"); return; }
-    setWezSaved("▶ testing…");
-    const r = await tester.weztermSetBounds({ x: v.monitor_x, y: v.monitor_y, w: v.monitor_w, h: v.monitor_h });
-    if (r && r.ok) setWezSaved(`▶ applied ${v.monitor_w}×${v.monitor_h} @ ${v.monitor_x},${v.monitor_y}`);
-    else if (r && r.reason === "permission") setWezSaved("⚠ Automation permission needed (System Events)");
-    else if (r && r.reason === "not-running") setWezSaved("○ open a WezTerm window first (pop out a terminal)");
-    else setWezSaved("⚠ test failed");
+    if (!v) { setFitMsg("⚠ X and Y are required."); return; }
+    setFitMsg("▶ applying…");
+    if (v.monitor_w > 0 && v.monitor_h > 0) {
+      const r = await tester.weztermSetBounds({ x: v.monitor_x, y: v.monitor_y, w: v.monitor_w, h: v.monitor_h });
+      if (r && r.reason === "permission") { setPerm("denied"); setFitMsg("⚠ macOS is blocking window control — grant access in the row above."); return; }
+      if (r && r.ok) setPerm("granted");
+    }
+    await tester.setWatch(v);
+    const c = parseInt(cols, 10) || 0, rr = parseInt(rows, 10) || 0;
+    const savedGrid = await tester.setWezterm({ cols: c, rows: rr });
+    useStore.setState({ watch: (await tester.getWatch()) || {}, wezterm: savedGrid });
+    setFitMsg(`saved ${v.monitor_w}×${v.monitor_h} @ ${v.monitor_x},${v.monitor_y}`);
+    setAdvancedOpen(false);   // collapse Advanced once applied & saved
   }
-  async function saveGrid() {
-    const c = parseInt(cols, 10) || 0, r = parseInt(rows, 10) || 0;
-    const saved = await tester.setWezterm({ cols: c, rows: r });
-    useStore.setState({ wezterm: saved });
-  }
+
+  const blocked = perm === "denied" || perm === "error";
+  const permChip = perm === "granted" ? { cls: "ok", text: "✓ allowed" }
+    : blocked ? { cls: "warn", text: "⚠ blocked" }
+    : { cls: "", text: perm === "checking" ? "…" : "—" };
 
   return (
     <div className="panel active" style={{ overflow: "auto" }}>
-      <div className="hint sgroup-intro">Which monitors the Arcade and its pop-out terminal use, and the watch-window size.</div>
+      <div className="hint sgroup-intro">Which monitors the Arcade and its pop-out terminal use.</div>
 
       <div className="dict-sec">Arcade monitor</div>
       <div className="disp-group">
@@ -136,43 +175,96 @@ export function SettingsDisplays() {
       </div>
 
       <div className="dict-sec" style={{ marginTop: 16 }}>Pop-out terminal</div>
+      <div className="hint sgroup-intro">A WezTerm window that mirrors the Arcade’s live-terminal area — <code>⌘P</code>, or dictate without the in-Arcade terminal.</div>
       <div className="disp-group">
-        <div className="hint">Where the Terminal <b>watch</b> window lands when you pop it out (<code>⌘P</code>, or dictate without the in-Arcade terminal).</div>
+        {/* setting */}
         <div className="row">
-          <label style={{ flex: "0 0 150px" }}>Position · size</label>
-          <span className="fld">X <input type="number" value={wx} onChange={(e) => setWx(e.target.value)} /></span>
-          <span className="fld">Y <input type="number" value={wy} onChange={(e) => setWy(e.target.value)} /></span>
-          <span className="fld">W <input type="number" value={ww} onChange={(e) => setWw(e.target.value)} /></span>
-          <span className="fld">H <input type="number" value={wh} onChange={(e) => setWh(e.target.value)} /></span>
-          <button style={{ marginLeft: 6 }} onClick={watchSave}>Save</button>
-          <button className="ghost" title="Clear the saved position so the window returns to your primary display — fixes a lost / off-screen window or an unplugged monitor" onClick={watchReset}>Reset</button>
+          <label>Watch on monitor</label>
+          <select className="grow" style={{ maxWidth: 320 }} value={watchMon} onChange={(e) => setWatchMon(e.target.value)}>
+            <option value="">Same as Arcade monitor</option>
+            {screens.map((s) => (
+              <option key={`${s.x},${s.y}`} value={`${s.x},${s.y}`}>
+                Display {s.index + 1} — {s.w}×{s.h}{s.primary ? " (primary)" : ""}
+              </option>
+            ))}
+          </select>
         </div>
-        <div className="row" style={{ alignItems: "center" }}>
-          <label style={{ flex: "0 0 150px" }}>WezTerm window</label>
-          <span className="hint" style={{ flex: 1 }}>{wezSyncStatus}</span>
-          <button className="secondary" title="Open the WezTerm terminal window so you can drag it to the monitor & size you want — then Capture reads it" onClick={openWezterm}>↗ Open WezTerm</button>
-        </div>
-        <div className="row">
-          <span style={{ flex: "0 0 150px" }}></span>
-          <button className="ghost" title="Read the WezTerm window's current position & size into the fields below" onClick={capture}>📍 Capture current</button>
-          <button className="ghost" title="Compute W×H from the Arcade monitor and the live-terminal view ratio" onClick={syncToArcade}>🧮 Sync to Arcade view</button>
-          <button className="ghost" title="Resize the open WezTerm window to the W/H + X/Y above so you can see it" onClick={testSize}>▶ Test size</button>
-          <span className="hint" style={{ marginLeft: 8 }}>{wezSaved}</span>
-        </div>
-        <div className="hint">Flow: <b>↗ Open WezTerm</b> (opens the terminal window) → drag/resize it onto the monitor you want → <b>📍 Capture current</b> (reads its position & size into the fields) → <b>Save</b>. Or use <b>🧮 Sync to Arcade view</b> to compute W×H automatically, then <b>▶ Test size</b> to preview. Capturing/testing needs the Automation (System Events) permission.</div>
-      </div>
 
-      <div className="dict-sec" style={{ marginTop: 16 }}>Terminal grid</div>
-      <div className="disp-group">
-        <div className="row">
-          <label style={{ flex: "0 0 150px" }}>Terminal grid size</label>
-          <input type="number" min="20" max="500" placeholder="cols" style={{ flex: "0 0 90px" }} value={cols} onChange={(e) => setCols(e.target.value)} />
-          <span style={{ opacity: 0.6 }}>×</span>
-          <input type="number" min="5" max="300" placeholder="rows" style={{ flex: "0 0 90px" }} value={rows} onChange={(e) => setRows(e.target.value)} />
-          <span style={{ opacity: 0.6 }}>cols × rows</span>
-          <button style={{ marginLeft: 8 }} onClick={saveGrid}>Save</button>
+        {/* actions / diagnostics — a list of rows, scales as more are added */}
+        <div className="disp-actions">
+          <div className="disp-act-row">
+            <span className="disp-act-icon">⤢</span>
+            <div className="disp-act-main">
+              <div className="disp-act-name">Fit to Arcade view</div>
+              <div className="disp-act-sub">Resize WezTerm to match the live-terminal area (W×H) — keeps its current position.</div>
+            </div>
+            <div className="disp-act-trail">
+              <button className="disp-act-btn" onClick={fitToArcade}>Fit</button>
+            </div>
+          </div>
+
+          <div className="disp-act-row">
+            <span className="disp-act-icon">◎</span>
+            <div className="disp-act-main">
+              <div className="disp-act-name">Center on monitor</div>
+              <div className="disp-act-sub">Center the WezTerm window on the chosen monitor — keeps its current size.</div>
+            </div>
+            <div className="disp-act-trail">
+              <button className="disp-act-btn" onClick={centerWindow}>Center</button>
+            </div>
+          </div>
+
+          <div className="disp-act-row">
+            <span className="disp-act-icon">📍</span>
+            <div className="disp-act-main">
+              <div className="disp-act-name">Capture current</div>
+              <div className="disp-act-sub">Read the live window’s position &amp; size into the Advanced fields.</div>
+            </div>
+            <div className="disp-act-trail">
+              <button className="disp-act-btn" onClick={() => { setAdvancedOpen(true); captureCurrent(); }}>Capture</button>
+            </div>
+          </div>
+
+          <div className="disp-act-row">
+            <span className="disp-act-icon">🔌</span>
+            <div className="disp-act-main">
+              <div className="disp-act-name">WezTerm control access</div>
+              <div className="disp-act-sub">macOS Automation permission — needed to size &amp; place the window.</div>
+            </div>
+            <div className="disp-act-trail">
+              <span className={`disp-chip ${permChip.cls}`}>{permChip.text}</span>
+              <button className="disp-act-btn" onClick={blocked ? requestPerm : checkPerm}>{blocked ? "Grant access" : "Re-check"}</button>
+            </div>
+          </div>
         </div>
-        <div className="hint">Size of the pop-out WezTerm watch window in characters (e.g. <code>132 × 38</code>). Applied when the watch window opens. Leave blank for Terminal default.</div>
+
+        {fitMsg && <div className="disp-result">{fitMsg}</div>}
+
+        <button className="disp-adv-toggle" onClick={() => setAdvancedOpen((v) => !v)}>
+          {advancedOpen ? "▾" : "▸"} Advanced — manual position, size &amp; grid
+        </button>
+        {advancedOpen && (
+          <div className="disp-adv">
+            <div className="row">
+              <label style={{ flex: "0 0 90px" }}>Position · size</label>
+              <span className="fld">X <input type="number" value={wx} onChange={(e) => setWx(e.target.value)} /></span>
+              <span className="fld">Y <input type="number" value={wy} onChange={(e) => setWy(e.target.value)} /></span>
+              <span className="fld">W <input type="number" value={ww} onChange={(e) => setWw(e.target.value)} /></span>
+              <span className="fld">H <input type="number" value={wh} onChange={(e) => setWh(e.target.value)} /></span>
+            </div>
+            <div className="row">
+              <label style={{ flex: "0 0 90px" }}>Grid</label>
+              <input type="number" min="20" max="500" placeholder="cols" style={{ flex: "0 0 80px" }} value={cols} onChange={(e) => setCols(e.target.value)} />
+              <span style={{ opacity: 0.6 }}>×</span>
+              <input type="number" min="5" max="300" placeholder="rows" style={{ flex: "0 0 80px" }} value={rows} onChange={(e) => setRows(e.target.value)} />
+              <span className="hint">cols × rows</span>
+            </div>
+            <div className="btnrow">
+              <button className="secondary" title="Resize the open WezTerm window to these values and save them" onClick={applyAdvanced}>Apply &amp; save</button>
+            </div>
+            <div className="hint">Manual override — normally just use <b>Fit to Arcade view</b> above. Grid is the terminal’s character size (e.g. <code>132 × 38</code>); leave blank for the default.</div>
+          </div>
+        )}
       </div>
     </div>
   );
