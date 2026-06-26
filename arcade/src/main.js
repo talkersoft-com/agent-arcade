@@ -122,6 +122,9 @@ function boot() {
     focusedAgent: () => api.focusedAgent(),
     commands: () => arcade.getSnapshot().context.commands,
     send: (e) => arcade.send(e),
+    // The per-agent actor (durable draft store) — terminal.js reads/writes the
+    // terminal-view prompt draft (termDraft) through this, replacing its old Map.
+    actorFor: (id) => arcade.getSnapshot().context.agentActors[id] || null,
   });
 
   wireToasts();
