@@ -19,7 +19,8 @@ export const agentMachine = createMachine({
   id: "agent",
   context: ({ input }) => ({
     id: input.id,
-    draft: "",            // durable unsent type-box text
+    draft: "",            // durable unsent type-box text (agent-view #av-input)
+    termDraft: "",        // durable unsent terminal-view prompt text (#av-term-input)
     view: "menu",         // "menu" | "insert"
     status: "idle",       // last known delivery status
   }),
@@ -28,6 +29,21 @@ export const agentMachine = createMachine({
     // ONLY place the draft is mutated; the render layer reads it back verbatim.
     "DRAFT.SET": { actions: assign({ draft: ({ event }) => event.draft }) },
     "DRAFT.CLEAR": { actions: assign({ draft: "" }) },
+
+    // Terminal-view prompt draft — same durable-per-agent pattern as `draft`, but for
+    // the terminal peek's prompt box. SET on every keystroke, CLEAR on a successful
+    // send. APPEND inserts text on its own line (used by file drag-and-drop), with no
+    // leading blank line when the prompt is empty.
+    "TERM_DRAFT.SET": { actions: assign({ termDraft: ({ event }) => event.text }) },
+    "TERM_DRAFT.CLEAR": { actions: assign({ termDraft: "" }) },
+    "TERM_DRAFT.APPEND": {
+      actions: assign({
+        termDraft: ({ context, event }) => {
+          const cur = context.termDraft || "";
+          return cur + (cur && !cur.endsWith("\n") ? "\n" : "") + event.text;
+        },
+      }),
+    },
 
     // View sub-state. INSERT opens the type box (keeps existing draft); MENU closes
     // it WITHOUT clearing the draft, so re-opening shows the same text.
