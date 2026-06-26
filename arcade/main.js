@@ -167,11 +167,13 @@ function loadGroups() {
 // Macro arg types. We accept friendly aliases so a hand-edited YAML doesn't
 // silently fall back to "select": anything unrecognized stays a select (the
 // historical default). "flag" = ON/OFF toggle that emits a literal token;
-// "text" = free user-defined value; "select" = pick from `options`.
+// "text" = free user-defined value; "select" = pick from `options`;
+// "fixed" = a hard-coded `value` substituted verbatim, never prompted.
 function argType(t) {
   switch (String(t || "").toLowerCase()) {
     case "flag": case "bool": case "boolean": case "toggle": case "switch": return "flag";
-    case "text": case "input": case "string": case "value": case "freetext": case "free": return "text";
+    case "text": case "input": case "string": case "freetext": case "free": return "text";
+    case "fixed": case "hardcoded": case "const": case "constant": case "static": case "locked": case "preset": return "fixed";
     default: return "select";
   }
 }
@@ -191,14 +193,16 @@ function loadCommands() {
       return {
         key: String(a.key || ""),
         label: String(a.label || a.key || ""),
-        type,                                             // "select" | "text" | "flag"
-        // flags are optional by nature (OFF is a valid answer); others default to required
-        required: type === "flag" ? !!a.required : (a.required === undefined ? true : !!a.required),
+        type,                                             // "select" | "text" | "flag" | "fixed"
+        // flags + fixed are never user-prompted, so neither is "required"
+        required: (type === "flag" || type === "fixed") ? !!a.required : (a.required === undefined ? true : !!a.required),
         // flag default is a boolean (ON/OFF); select/text default is a string value
         default: type === "flag" ? !!a.default : (a.default === undefined ? "" : String(a.default)),
         // flag type only: the literal token emitted when ON (e.g. "--force" or bare "force").
         // Empty → the renderer falls back to "--<key>".
         flag: String(a.flag || ""),
+        // fixed type only: the literal value substituted verbatim into {key}, never prompted.
+        value: String(a.value !== undefined ? a.value : ""),
         options: Array.isArray(a.options)
           ? a.options.map((o) => ({ value: String(o.value), label: String(o.label || o.value) }))
           : [],
