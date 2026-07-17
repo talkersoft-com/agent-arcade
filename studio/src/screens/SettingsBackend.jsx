@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { useStore } from "../store.js";
 import { tester, fmtBytes, apiUrlIsLocal } from "../ipc.js";
 
@@ -6,6 +6,91 @@ function capsSummary(caps) {
   if (!caps) return "";
   const yn = (b) => (b ? "yes" : "no");
   return `cleanup ${yn(caps.text_cleanup)} · image-gen ${yn(caps.image_gen)} · backend ${caps.backend || "?"}`;
+}
+
+// Microphone picker + live sound test. The chosen device persists to app.mic_device_id
+// and is fed into both capture paths (Studio ipc.startCapture, Arcade dictation.js).
+function MicSection({ app }) {
+  const [mics, setMics] = useState([]);
+  const [selected, setSelected] = useState(app.mic_device_id || "");
+  const [testing, setTesting] = useState(false);
+  const [level, setLevel] = useState(0);   // 0..1 live input level
+  const [heard, setHeard] = useState(false);
+  const rafRef = useRef(null);
+  const teardownRef = useRef(null);
+
+  useEffect(() => { setSelected(app.mic_device_id || ""); }, [app.mic_device_id]);
+
+  async function refreshMics() {
+    // one getUserMedia so device labels are populated (they're blank without permission)
+    try { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); s.getTracks().forEach((t) => t.stop()); } catch {}
+    try { const d = await navigator.mediaDevices.enumerateDevices(); setMics(d.filter((x) => x.kind === "audioinput")); } catch {}
+  }
+  useEffect(() => {
+    refreshMics();
+    const onChange = () => refreshMics();
+    navigator.mediaDevices.addEventListener && navigator.mediaDevices.addEventListener("devicechange", onChange);
+    return () => { navigator.mediaDevices.removeEventListener && navigator.mediaDevices.removeEventListener("devicechange", onChange); stopTest(); };
+  }, []);
+
+  async function selectMic(id) {
+    setSelected(id);
+    const saved = await tester.setApp({ mic_device_id: id });
+    useStore.setState((s) => ({ app: { ...s.app, ...saved } }));
+    if (testing) startTest(id);   // re-point the live meter at the new device
+  }
+
+  function stopTest() {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
+    if (teardownRef.current) { try { teardownRef.current(); } catch {} teardownRef.current = null; }
+    setTesting(false); setLevel(0);
+  }
+  async function startTest(id = selected) {
+    stopTest();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: id ? { deviceId: { exact: id } } : true });
+      const ctx = new AudioContext();
+      const an = ctx.createAnalyser(); an.fftSize = 1024;
+      ctx.createMediaStreamSource(stream).connect(an);
+      const buf = new Float32Array(an.fftSize);
+      teardownRef.current = () => { stream.getTracks().forEach((t) => t.stop()); ctx.close(); };
+      setHeard(false); setTesting(true);
+      const tick = () => {
+        an.getFloatTimeDomainData(buf);
+        let sum = 0; for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+        const lvl = Math.min(1, Math.sqrt(sum / buf.length) * 4);   // RMS → scaled bar
+        setLevel(lvl);
+        if (lvl > 0.08) setHeard(true);
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      tick();
+    } catch { stopTest(); }
+  }
+
+  return (
+    <>
+      <div className="hint sgroup-intro" style={{ marginTop: 16 }}>Microphone</div>
+      <div className="row" style={{ marginTop: 8, alignItems: "center" }}>
+        <label style={{ width: 150 }}>Input device</label>
+        <select style={{ flex: "0 1 360px" }} value={selected} onChange={(e) => selectMic(e.target.value)}>
+          <option value="">System default</option>
+          {mics.map((m, i) => <option key={m.deviceId || i} value={m.deviceId}>{m.label || `Microphone ${i + 1}`}</option>)}
+        </select>
+        <button style={{ marginLeft: 8 }} onClick={() => (testing ? stopTest() : startTest())}>{testing ? "Stop test" : "Test microphone"}</button>
+      </div>
+      {testing && (
+        <div className="row" style={{ marginTop: 8, alignItems: "center" }}>
+          <label style={{ width: 150 }}>Level</label>
+          <div style={{ flex: "0 1 360px", height: 10, background: "rgba(128,128,128,0.2)", borderRadius: 5, overflow: "hidden" }}>
+            <div style={{ width: `${Math.round(level * 100)}%`, height: "100%", background: heard ? "#2f855a" : "#4a90d9", transition: "width 60ms linear" }} />
+          </div>
+          <span className="hint" style={{ marginLeft: 8, color: heard ? "#2f855a" : "" }}>{heard ? "✓ Audio good" : "Say something…"}</span>
+        </div>
+      )}
+      <div className="hint">Pick which microphone the Arcade dictates from. <b>Test microphone</b> shows a live input level so you can confirm it's picking you up. Saved to <code>app.mic_device_id</code>.</div>
+    </>
+  );
 }
 
 export function SettingsBackend() {
@@ -121,6 +206,8 @@ export function SettingsBackend() {
       <div className="hint" style={{ minHeight: 18, marginTop: 6, color: addMsg.color }}>{addMsg.text}</div>
       <div className="hint" style={{ minHeight: 18, marginTop: 6, color: status.color }}>{status.html}</div>
       <div className="hint">Select a server's radio to make it active — it re-checks and flips dictation on/off live. <b>Test</b> probes that server without changing the active one.</div>
+
+      <MicSection app={app} />
 
       <div className="row" style={{ marginTop: 12, alignItems: "center" }}>
         <label style={{ width: 150 }}>Model</label>
