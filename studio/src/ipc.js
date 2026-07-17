@@ -73,6 +73,9 @@ export function apiUrlIsLocal(url) {
 // ── mic capture → WAV (ported 1:1) ──
 let audioCtx, source, processor, stream, chunks = [];
 export async function startCapture(deviceId) {
+  if (deviceId === undefined) {                       // no explicit device → use the saved choice
+    try { const a = await tester.getApp(); deviceId = (a && a.mic_device_id) || undefined; } catch {}
+  }
   stream = await navigator.mediaDevices.getUserMedia({ audio: deviceId ? { deviceId: { exact: deviceId } } : true });
   audioCtx = new AudioContext();
   source = audioCtx.createMediaStreamSource(stream);
