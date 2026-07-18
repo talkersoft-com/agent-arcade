@@ -139,6 +139,17 @@ function showAbout() {
   });
 }
 
+// Quit EVERYTHING: the Arcade/Studio run as detached sibling processes (not
+// children), so app.quit() alone would leave them behind. SIGTERM each Electron
+// process of THIS install — graceful, so every instance runs its before-quit
+// (killing its Go bridge; warn_on_exit still gets its say). The launcher matches
+// the pattern too and exits the same way; app.quit() covers the nothing-matched
+// case. WezTerm is left alone on purpose — the mux keeps agent sessions alive.
+function quitAgentArcade() {
+  const { execFile } = require("child_process");
+  execFile("pkill", ["-f", `[Ee]lectron ${ROOT}`], () => app.quit());
+}
+
 function buildMenu() {
   const items = [
     { label: `${APP_LABEL} v${app.getVersion()}`, enabled: false },
@@ -151,7 +162,7 @@ function buildMenu() {
   items.push(
     { label: `About ${APP_LABEL}…`, click: showAbout },
     { type: "separator" },
-    { label: DEV ? "Quit Launcher (Dev)" : "Quit Launcher", click: () => app.quit() },
+    { label: DEV ? "Quit Agent Arcade (Dev)" : "Quit Agent Arcade", click: quitAgentArcade },
   );
   return Menu.buildFromTemplate(items);
 }
