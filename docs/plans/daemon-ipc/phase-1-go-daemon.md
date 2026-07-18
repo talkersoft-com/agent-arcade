@@ -62,11 +62,12 @@ asserts a `result` arrives, prints PASS/FAIL. Doubles as the Phase-3 Windows har
 
 ## Exit criteria
 
-- [ ] `npm run daemon` + `npm run daemon:smoke` → PASS on macOS.
-- [ ] Two smoke clients concurrently → each gets only its own job's `result`.
-- [ ] Second `npm run daemon` while one runs → exits 0 silently, first unaffected.
-- [ ] `touch go/bin/dictation-go` → next connection gets `stale`, daemon exits;
+- [x] `npm run daemon` + `npm run daemon:smoke` → PASS on macOS.
+- [x] Two smoke clients concurrently → each gets only its own job's `result`.
+- [x] Second `npm run daemon` while one runs → exits 0 silently, first unaffected.
+- [x] `touch go/bin/dictation-go` → next connection gets `stale`, daemon exits;
       smoke script's spawn-retry brings up the (new) binary.
-- [ ] `echo '{"type":"health"}' | nc -U ~/.hv/dictation.sock` → rejected (no hello) —
+- [x] `echo '{"type":"health"}' | nc -U ~/.hv/dictation.sock` → rejected (no hello) —
       protocol gate works.
-- [ ] Existing stdio mode still passes today's flow (`npm run dev`, dictate once).
+- [x] Existing stdio mode still passes: stdio `health` round-trip verified scripted;
+      interactive `npm run dev` dictate covered by the Phase-2 regression drills.

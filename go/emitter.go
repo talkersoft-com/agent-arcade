@@ -6,6 +6,12 @@ import (
 	"sync"
 )
 
+// sink is where a dictation job's events go: stdout in stdio mode (emitter),
+// the owning connection in daemon mode (jobSink).
+type sink interface {
+	emit(outMsg)
+}
+
 // emitter serializes NDJSON output to stdout. json.Encoder.Encode appends a
 // newline after each object, giving us one JSON object per line. A mutex keeps
 // concurrent emits (e.g. from the audio callback path vs. the command loop)

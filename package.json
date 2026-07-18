@@ -35,7 +35,7 @@
   "scripts": {
     "postinstall": "node scripts/fix-node-pty.js",
     "build:js": "node scripts/build-js.mjs",
-    "build:go": "cd go && go mod tidy && CGO_ENABLED=1 go build -ldflags=-linkmode=external -o bin/dictation-go . && codesign -f -s - bin/dictation-go",
+    "build:go": "cd go && go mod tidy && V=$(node -p \"require('../package.json').version\") && CGO_ENABLED=1 go build -ldflags \"-linkmode=external -X main.version=$V\" -o bin/dictation-go . && codesign -f -s - bin/dictation-go",
     "build:wezterm": "cd wezterm-bridge && CGO_ENABLED=1 go build -ldflags=-linkmode=external -o bin/wezterm-bridge . && codesign -f -s - bin/wezterm-bridge",
     "vendor:wezterm": "bash scripts/fetch-wezterm.sh",
     "build": "npm run build:js && npm run vendor:wezterm && npm run build:go && npm run build:wezterm",
@@ -50,6 +50,8 @@
     "dev": "npm run kill:dev && npm run build && DICTATE_DEV=1 electron . --launcher",
     "dev:nobuild": "npm run kill:dev && DICTATE_DEV=1 electron . --launcher",
     "backend": "bash scripts/backend.sh",
+    "daemon": "go/bin/dictation-go --daemon",
+    "daemon:smoke": "node scripts/daemon-smoke.js",
     "arcade": "npm run build && electron . --arcade",
     "arcade:nobuild": "electron . --arcade"
   },

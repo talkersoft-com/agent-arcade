@@ -38,6 +38,12 @@ type inMsg struct {
 	Source    string `json:"source"`
 	DictationOptions string `json:"dictation_options"` // comma-separated dictation-option keys
 	Cleanup          *bool  `json:"cleanup"`           // nil = default on; false = skip AI cleanup layer
+
+	// Daemon protocol v1 (hello/shutdown) — unused in stdio mode.
+	Client     string `json:"client"`      // arcade | studio | launcher | cli
+	AppVersion string `json:"app_version"`
+	Protocol   int    `json:"protocol"`
+	Reason     string `json:"reason"`
 }
 
 type outMsg struct {
@@ -58,6 +64,13 @@ type outMsg struct {
 	Level       string `json:"level,omitempty"`
 	Msg         string `json:"msg,omitempty"`
 	Detail      string `json:"detail,omitempty"`
+
+	// Daemon protocol v1 (welcome/stale/info_result) — unused in stdio mode.
+	DaemonVersion string   `json:"daemon_version,omitempty"`
+	Protocol      int      `json:"protocol,omitempty"`
+	UptimeS       int64    `json:"uptime_s,omitempty"`
+	Clients       []string `json:"clients,omitempty"`
+	Reason        string   `json:"reason,omitempty"`
 }
 
 func main() {
@@ -74,6 +87,13 @@ func main() {
 	// app uses, no Electron, no mic. Exit 0 on success, 1 on failure.
 	if len(os.Args) > 1 && (os.Args[1] == "--selftest" || os.Args[1] == "-selftest") {
 		os.Exit(runSelftest(api, apiURL, os.Args[2:]))
+	}
+
+	// --daemon: serve protocol v1 to many clients over the local socket/pipe
+	// (see docs/plans/daemon-ipc/PLAN.md). The stdio mode below stays intact
+	// until Phase 4 retires it.
+	if len(os.Args) > 1 && (os.Args[1] == "--daemon" || os.Args[1] == "-daemon") {
+		os.Exit(runDaemon(api, apiURL))
 	}
 
 	out := newEmitter()
@@ -116,7 +136,7 @@ func main() {
 	}
 }
 
-func handleDictate(out *emitter, log func(string, ...any), api *apiClient, msg inMsg) {
+func handleDictate(out sink, log func(string, ...any), api *apiClient, msg inMsg) {
 	src := msg.Source
 	if src == "" {
 		src = "mic"
