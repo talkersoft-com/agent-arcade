@@ -57,7 +57,7 @@ while the existing stdin/stdout mode keeps working untouched.
 ```
 
 `scripts/daemon-smoke.js` (new, ~80 lines, plain Node `net`): connects, does
-`hello`→`welcome`, sends `health`, sends a `dictate` for `test/fixtures/hello.wav`,
+`hello`→`welcome`, sends `health`, sends a `dictate` for `testdata/sample.wav`,
 asserts a `result` arrives, prints PASS/FAIL. Doubles as the Phase-3 Windows harness.
 
 ## Exit criteria

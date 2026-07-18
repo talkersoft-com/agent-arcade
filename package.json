@@ -36,7 +36,7 @@
   "scripts": {
     "postinstall": "node scripts/fix-node-pty.js",
     "build:js": "node scripts/build-js.mjs",
-    "build:go": "cd go && go mod tidy && V=$(node -p \"require('../package.json').version\") && CGO_ENABLED=1 go build -ldflags \"-linkmode=external -X main.version=$V\" -o bin/dictation-go . && codesign -f -s - bin/dictation-go",
+    "build:go": "cd go && go mod tidy && V=$(node -p \"require('../package.json').version\") && CGO_ENABLED=1 go build -ldflags \"-linkmode=external -X main.version=$V\" -o bin/dictation-go . && codesign -f -s - bin/dictation-go && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags \"-X main.version=$V\" -o /dev/null .",
     "build:wezterm": "cd wezterm-bridge && CGO_ENABLED=1 go build -ldflags=-linkmode=external -o bin/wezterm-bridge . && codesign -f -s - bin/wezterm-bridge",
     "vendor:wezterm": "bash scripts/fetch-wezterm.sh",
     "build": "npm run build:js && npm run vendor:wezterm && npm run build:go && npm run build:wezterm",
