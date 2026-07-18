@@ -548,7 +548,6 @@ function normalizeApp(a) {
     compose_split: clampSplit(a.compose_split),
     dictation_tail_ms: clampDictTail(a.dictation_tail_ms), // end-of-speech capture drain (0–1500, default 250)
     dictation_pad_ms: clampDictPad(a.dictation_pad_ms),    // trailing-silence pad (0–1000, default 200)
-    mic_device_id: String(a.mic_device_id || ""),          // chosen input device ("" = system default)
     shortcuts: normalizeShortcuts(a.shortcuts),
   };
 }

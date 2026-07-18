@@ -192,7 +192,6 @@ export function applyDictationSettings(app) {
   if (!app) return;
   if (Number.isFinite(app.dictation_tail_ms)) dictTailMs = app.dictation_tail_ms;
   if (Number.isFinite(app.dictation_pad_ms)) dictPadMs = app.dictation_pad_ms;
-  if (typeof app.mic_device_id === "string") micDeviceId = app.mic_device_id;
   if (app.recordingNavBehavior === "lock" || app.recordingNavBehavior === "send") {
     recordingNavBehavior = app.recordingNavBehavior;
   }
@@ -203,9 +202,8 @@ function clearRecState() { recAgentId = null; recAgentName = ""; recJobId = null
 // ── capture (Web Audio → mono 16-bit WAV) — reused from the reference verbatim ──
 let audioCtx, source, processor, stream, chunks = [];
 let lastRate = 48000;
-let micDeviceId = "";                 // chosen input device (app.mic_device_id); "" = system default
 async function startCapture() {
-  stream = await navigator.mediaDevices.getUserMedia({ audio: micDeviceId ? { deviceId: { exact: micDeviceId } } : true });
+  stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   audioCtx = new AudioContext();
   source = audioCtx.createMediaStreamSource(stream);
   processor = audioCtx.createScriptProcessor(4096, 1, 1);
