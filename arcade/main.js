@@ -117,8 +117,8 @@ function loadApp() {
     sync_wezterm_tabs: a.sync_wezterm_tabs !== false,
     warn_on_exit: a.warn_on_exit !== false,
     compose_split: clampSplit(a.compose_split),
-    dictation_tail_ms: clampInt(a.dictation_tail_ms, 0, 1500, 250),
-    dictation_pad_ms: clampInt(a.dictation_pad_ms, 0, 1000, 200),
+    dictation_tail_ms: clampInt(a.dictation_tail_ms, 0, 1500, 600),
+    dictation_pad_ms: clampInt(a.dictation_pad_ms, 0, 1000, 400),
     mic_device_id: String(a.mic_device_id || ""),       // chosen input device ("" = system default)
     mic_device_label: String(a.mic_device_label || ""), // label fallback when the id goes stale
     // recordingNavBehavior (Phase 0005): what navigating away DURING a recording does.

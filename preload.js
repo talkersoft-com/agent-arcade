@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld("tester", {
   // global app + monitor + wezterm settings (persisted to ~/.hv/agent-arcade.yaml)
   getApp: () => ipcRenderer.invoke("app:get"),
   setApp: (s) => ipcRenderer.invoke("app:set", s),
+  micVolGet: () => ipcRenderer.invoke("mic:volume:get"),
+  micVolSet: (n) => ipcRenderer.invoke("mic:volume:set", n),
   // global hotkeys (Settings → Shortcuts)
   trayIcon: () => ipcRenderer.invoke("ui:trayIcon"),
   seedArcadeTour: () => ipcRenderer.invoke("tour:seedArcade"),
