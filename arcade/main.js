@@ -119,6 +119,8 @@ function loadApp() {
     compose_split: clampSplit(a.compose_split),
     dictation_tail_ms: clampInt(a.dictation_tail_ms, 0, 1500, 250),
     dictation_pad_ms: clampInt(a.dictation_pad_ms, 0, 1000, 200),
+    mic_device_id: String(a.mic_device_id || ""),       // chosen input device ("" = system default)
+    mic_device_label: String(a.mic_device_label || ""), // label fallback when the id goes stale
     // recordingNavBehavior (Phase 0005): what navigating away DURING a recording does.
     // "send" (default) = commit dictation to the original agent, then navigate.
     // "lock"           = block navigation while recording. Optional, additive field;
@@ -572,6 +574,17 @@ ipcMain.handle("arcade:saveViewRatio", (_e, r) => {
   return { ok: true };
 });
 ipcMain.handle("arcade:settings", () => loadApp()); // global app settings (e.g. compose_split)
+// renderer reports which device a recording ACTUALLY used (Chromium's track.label) —
+// persisted so Studio's Microphone row can show verifiable "Last recording: X".
+ipcMain.handle("arcade:mic-used", (_e, label) => {
+  try {
+    const doc = readDoc();
+    doc.app = doc.app || {};
+    doc.app.mic_last_used = String(label || "");
+    writeDoc(doc);
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
 ipcMain.handle("arcade:dictationGet", () => dictationState); // cached availability (Studio owns the probe)
 // First-run tour: a self-deleting top-level `tour:` map (seeded by the Studio
 // wizard). Each present key = an Arcade screen still owed an ambient hint.

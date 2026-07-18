@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld("arcade", {
   tourDone: (screen) => ipcRenderer.invoke("arcade:tourDone", screen),
   startSetup: () => ipcRenderer.invoke("arcade:startSetup"), // welcome orb → Studio first-agent wizard
   dictate: (agentId, wav) => ipcRenderer.invoke("arcade:dictate", { agentId, wav }),
+  micUsed: (label) => ipcRenderer.invoke("arcade:mic-used", label), // report which device a recording actually used
   activate: (agentId) => ipcRenderer.invoke("arcade:activate", agentId),
   launchAgent: (agentId) => ipcRenderer.invoke("arcade:launchAgent", agentId),
   popOut: (agentId, force) => ipcRenderer.invoke("arcade:popOut", { agentId, force: !!force }),
