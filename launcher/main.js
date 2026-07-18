@@ -160,7 +160,7 @@ let monitorClient = null;
 let quitting = false;
 let daemonBackoff = 250;
 function superviseDaemon() {
-  if (quitting || process.env.DICTATE_IPC === "stdio") return;
+  if (quitting) return;
   const apiUrl = readApiUrl();
   if (!apiUrl || !fs.existsSync(GO_BIN)) {           // not configured/built yet —
     setTimeout(superviseDaemon, 30000); return;      // check again, don't crash-loop

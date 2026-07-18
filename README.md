@@ -13,7 +13,7 @@
   🕹️ <strong>One surface, many agents</strong> — a grouped, avatar-driven roster you fly through by keyboard<br/>
   ⚡ <strong>Typed <code>@</code>-macros</strong> — pinned commands with <em>select / text / flag / fixed</em> args, run in the agent's shell<br/>
   🖥️ <strong>Live terminal · sync · pop-out</strong> — watch output, forward every keystroke, or detach a full WezTerm window<br/>
-  🔋 <strong>Batteries included</strong> — bundles a notarized WezTerm + a Go dictation bridge; <code>npm i -g</code> and go
+  🔋 <strong>Batteries included</strong> — bundles a notarized WezTerm + a shared Go dictation daemon; <code>npm i -g</code> and go
 </p>
 
 ---
@@ -46,7 +46,7 @@ Select the agent, trigger the macro, answer the one prompt (`step: 3`), and the 
 
 ## Install
 
-Agent Arcade ships as a public npm package with everything it needs **bundled** (a notarized WezTerm + the Go dictation bridge) — no external terminal, no separate install.
+Agent Arcade ships as a public npm package with everything it needs **bundled** (a notarized WezTerm + the shared Go dictation daemon — one process serving every window over a local socket) — no external terminal, no separate install.
 
 ```sh
 npm install -g @talkersoft-com/agent-arcade

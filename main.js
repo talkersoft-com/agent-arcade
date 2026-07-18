@@ -10,7 +10,6 @@ const { spawn, execFile } = require("child_process");
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
-const readline = require("readline");
 const crypto = require("node:crypto");
 const yaml = require("js-yaml");
 
@@ -71,10 +70,8 @@ const arcade = require("./arcade/main.js");
 // copy. A no-op in dev (the path has no "app.asar" segment).
 const unpacked = (p) => p.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
 const GO_BIN = unpacked(path.join(__dirname, "go", "bin", "dictation-go"));
-// Daemon IPC (docs/plans/daemon-ipc/PLAN.md): default transport is the shared
-// dictation daemon over a local socket; DICTATE_IPC=stdio flips back to the
-// legacy per-window child until Phase 4 removes it.
-const USE_STDIO = process.env.DICTATE_IPC === "stdio";
+// Dictation IPC (docs/plans/daemon-ipc/PLAN.md): one shared daemon over a local
+// socket serves every window — NDJSON protocol v1 via lib/dictation-client.js.
 const { connectDictation } = require("./lib/dictation-client");
 
 // WezTerm "last leg": deliver cleaned text into a WezTerm/Claude pane via the
@@ -161,7 +158,6 @@ const SETTINGS_PATH = path.join(os.homedir(), ".hv", DEV ? "agent-arcade.dev.yam
 })();
 
 let win = null;
-let go = null;
 let jobSeq = 0;
 
 function toRenderer(channel, payload) {
@@ -650,50 +646,18 @@ function ensureDaemonClient() {
   return dc;
 }
 function spawnGo() {
-  if (!USE_STDIO) {
-    if (!dictationAvailable) return;
-    if (!loadApiUrl()) {
-      const msg = `No API URL configured — set "api_url:" in ${SETTINGS_PATH} (e.g. api_url: http://host:9100)`;
-      logLine("err", msg);
-      toRenderer("dictation:event", { type: "error", stage: "spawn", error: msg });
-      return;
-    }
-    ensureDaemonClient();
-    return;
-  }
-  // Gate the bridge on the cached probe: if dictation isn't available (no backend /
-  // not ready) there's nothing to transcribe with, so don't spawn a process that
-  // would only fail reaching a missing backend.
-  if (!dictationAvailable) {
-    logLine("info", "dictation unavailable — Go bridge not started");
-    return;
-  }
-  const apiUrl = loadApiUrl();
-  if (!apiUrl) {
+  // Gate on the cached probe: no reachable/ready backend → no client yet. (The
+  // daemon itself is cheap, but a missing api_url would just spawn a failing one.)
+  if (!dictationAvailable) return;
+  if (!loadApiUrl()) {
     const msg = `No API URL configured — set "api_url:" in ${SETTINGS_PATH} (e.g. api_url: http://host:9100)`;
     logLine("err", msg);
     toRenderer("dictation:event", { type: "error", stage: "spawn", error: msg });
     return;
   }
-  if (go && !go.killed) return; // already running (e.g. re-probe after a url change)
-  logLine("info", `spawning Go bridge: ${GO_BIN} (api=${apiUrl})`);
-  go = spawn(GO_BIN, [], { env: { ...process.env, DICTATION_API_URL: apiUrl }, stdio: ["pipe", "pipe", "pipe"] });
-  go.on("error", (err) => logLine("err", `cannot start Go bridge: ${err.message}. Run "npm run build:go".`));
-  go.on("exit", (code, signal) => logLine("err", `Go bridge exited (code=${code} signal=${signal})`));
-  readline.createInterface({ input: go.stdout }).on("line", (line) => {
-    const t = line.trim();
-    if (!t) return;
-    let msg; try { msg = JSON.parse(t); } catch { logLine("go-stdout", t); return; }
-    handleGo(msg);
-  });
-  readline.createInterface({ input: go.stderr }).on("line", (l) => logLine("go-stderr", l));
+  ensureDaemonClient();
 }
-function writeGo(obj) {
-  if (!USE_STDIO) return !!(dc && dc.send(obj));
-  if (!go || go.killed) return false;
-  go.stdin.write(JSON.stringify(obj) + "\n");
-  return true;
-}
+function writeGo(obj) { return !!(dc && dc.send(obj)); }
 
 // jobId -> { agentId, tmp } for in-flight streaming dictations
 const pending = {};
@@ -886,14 +850,10 @@ ipcMain.handle("mic:volume:set", (_e, n) => new Promise((res) => {
 // lets the ensure/supervision loops revive it — the chip's uptime reset is the
 // user-visible proof the restart took effect.
 ipcMain.handle("daemon:info", async () => {
-  if (USE_STDIO) return { ok: false, error: "stdio mode (DICTATE_IPC=stdio)" };
   try { const info = await ensureDaemonClient().info(); return { ok: true, info }; }
   catch (e) { return { ok: false, error: e.message }; }
 });
-ipcMain.handle("daemon:restart", () => {
-  if (USE_STDIO) return { ok: false, error: "stdio mode (DICTATE_IPC=stdio)" };
-  return { ok: !!ensureDaemonClient().shutdown("user_restart") };
-});
+ipcMain.handle("daemon:restart", () => ({ ok: !!ensureDaemonClient().shutdown("user_restart") }));
 
 // ── dictation capability (single source of truth, owned here) ────────────────────
 // Renderers read the cached flag on load; main pushes "dictation:available" on change.
@@ -974,17 +934,11 @@ ipcMain.handle("model:remove", async () => {
   return { ok: true, probe };
 });
 
-// Start/stop the Go bridge to match availability after a re-probe (no restart needed).
-// Daemon mode: the connection persists across availability flaps — the probe gates
-// the UI, and an idle daemon serving nobody costs nothing. Only stdio kills a child.
-function startDictationBridge() {
-  if (!USE_STDIO) { if (dictationAvailable) spawnGo(); return; }
-  if (dictationAvailable && (!go || go.killed)) spawnGo();
-}
-function stopDictationBridge() {
-  if (!USE_STDIO) return;
-  if (go && !go.killed) { try { go.kill(); } catch {} go = null; }
-}
+// Availability re-probes gate the UI, not the transport: the daemon connection
+// persists across flaps (an idle daemon serving nobody costs nothing), so
+// "start" just ensures the client exists and "stop" is intentionally a no-op.
+function startDictationBridge() { if (dictationAvailable) spawnGo(); }
+function stopDictationBridge() {}
 
 // ── Global hotkeys ─────────────────────────────────────────────────────────────
 // The PERSISTENT launcher process owns the global summon hotkey — a disposable
@@ -1761,6 +1715,6 @@ app.on("second-instance", (_e, argv) => {
 // this keeps it to exactly one app process.
 // The daemon OUTLIVES windows and app instances by design — quitting an app only
 // closes its client connection; the launcher's quit path owns daemon shutdown.
-app.on("window-all-closed", () => { if (go && !go.killed) go.kill(); if (dc) dc.close(); app.quit(); });
-app.on("before-quit", () => { if (go && !go.killed) go.kill(); if (dc) { dc.close(); dc = null; } });
+app.on("window-all-closed", () => { if (dc) dc.close(); app.quit(); });
+app.on("before-quit", () => { if (dc) { dc.close(); dc = null; } });
 app.on("will-quit", () => globalShortcut.unregisterAll());

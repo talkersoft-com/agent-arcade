@@ -18,6 +18,13 @@ var version = "dev"
 
 const protocolVersion = 1
 
+// sink is where a dictation job's events go — jobSink routes them to the
+// owning connection. (An interface, not *hubClient, so tests or future modes
+// can capture events without a live socket.)
+type sink interface {
+	emit(outMsg)
+}
+
 // hubClient is one connected app (arcade / studio / launcher / cli smoke
 // script). The write mutex keeps concurrent emits (job goroutines, broadcasts)
 // from interleaving partial NDJSON lines — same role the stdout emitter mutex
