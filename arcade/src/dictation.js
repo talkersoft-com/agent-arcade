@@ -45,8 +45,8 @@ let nextJob = 1;
 function newJobId() { return "arc-" + (nextJob++) + "-" + Date.now().toString(36); }
 
 // app-settings timing (read live from arcade settings; reference defaults).
-let dictTailMs = 250;
-let dictPadMs = 200;
+let dictTailMs = 600;
+let dictPadMs = 400;
 
 // `host` is supplied by main.js — the bridge to the root machine / focused agent:
 //   { focusedAgent(), isRecordingAgent(id), setAgentStatus(agentId, status), agentName(id) }

@@ -17,7 +17,55 @@ function MicSection({ app }) {
   const [mics, setMics] = useState([]);
   const [selected, setSelected] = useState(app.mic_device_id || "");
   const [lastUsed, setLastUsed] = useState(app.mic_last_used || "");
+  const [levels, setLevels] = useState([]);   // rolling live-level history → the "sound lines"
+  const [vol, setVol] = useState(null);       // macOS input volume 0–100 (system default device)
   useEffect(() => { setSelected(app.mic_device_id || ""); setLastUsed(app.mic_last_used || ""); }, [app]);
+
+  // Always-on sound lines: passively meter the SELECTED device while this tab is open.
+  // No test button — the meter simply is. Reopens when the selection changes.
+  useEffect(() => {
+    let raf = null, ctx = null, stream = null, alive = true;
+    (async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: selected ? { deviceId: { exact: selected } } : true });
+        if (!alive) { stream.getTracks().forEach((t) => t.stop()); return; }
+        ctx = new AudioContext();
+        const an = ctx.createAnalyser(); an.fftSize = 1024;
+        ctx.createMediaStreamSource(stream).connect(an);
+        const buf = new Float32Array(an.fftSize);
+        let last = 0;
+        const tick = (t) => {
+          if (!alive) return;
+          if (t - last > 90) {
+            last = t;
+            an.getFloatTimeDomainData(buf);
+            let sum = 0, peak = 0;
+            for (let i = 0; i < buf.length; i++) { const s = buf[i]; sum += s * s; const a = Math.abs(s); if (a > peak) peak = a; }
+            const lvl = Math.min(1, Math.sqrt(sum / buf.length) * 4);
+            // clip = raw peak near full scale — the "over the red line" condition
+            setLevels((p) => [...p.slice(-27), { l: lvl, clip: peak > 0.85 }]);
+          }
+          raf = requestAnimationFrame(tick);
+        };
+        raf = requestAnimationFrame(tick);
+      } catch { setLevels([]); }
+    })();
+    return () => {
+      alive = false;
+      if (raf) cancelAnimationFrame(raf);
+      try { if (stream) stream.getTracks().forEach((t) => t.stop()); } catch {}
+      try { if (ctx) ctx.close(); } catch {}
+    };
+  }, [selected]);
+
+  // macOS input volume — read once, write on slider move (applies to the system
+  // default input device; that OS gain is what silently zeroed the built-in mic).
+  useEffect(() => { (async () => { try { const v = await tester.micVolGet(); if (Number.isFinite(v) && v >= 0) setVol(v); } catch {} })(); }, []);
+  async function changeVol(v) {
+    const n = Math.max(0, Math.min(100, parseInt(v, 10) || 0));
+    setVol(n);
+    try { await tester.micVolSet(n); } catch {}
+  }
 
   async function refreshMics() {
     // one getUserMedia so device labels are populated (they're blank without permission)
@@ -46,7 +94,7 @@ function MicSection({ app }) {
 
   return (
     <>
-      <div className="hint sgroup-intro" style={{ marginTop: 16 }}>Microphone</div>
+      <div className="hint sgroup-intro" style={{ marginTop: 0 }}>Microphone</div>
       <div className="disp-actions" style={{ marginTop: 0, borderTop: "none", paddingTop: 0 }}>
         <div className="disp-act-row">
           <div className="disp-act-icon">🎙</div>
@@ -65,8 +113,41 @@ function MicSection({ app }) {
             </select>
           </div>
         </div>
+
+        <div className="disp-act-row">
+          <div className="disp-act-icon">📈</div>
+          <div className="disp-act-main">
+            <div className="disp-act-name">Level</div>
+            <div className="disp-act-sub">Speak normally — keep the lines under the red line. Red bars mean it's clipping.</div>
+          </div>
+          <div className="disp-act-trail" style={{ position: "relative", display: "flex", alignItems: "flex-end", gap: 2, height: 34, minWidth: 150 }}>
+            {/* the red horizontal line — the ceiling to stay under */}
+            <div style={{ position: "absolute", left: 0, right: 0, top: 4, borderTop: "2px solid rgba(229,62,62,0.8)" }} />
+            {(levels.length ? levels : Array.from({ length: 28 }, () => ({ l: 0, clip: false }))).map((b, i) => (
+              <div key={i} style={{
+                width: 3,
+                height: Math.max(2, b.l * 30),
+                background: b.clip ? "#e53e3e" : (b.l > 0.08 ? "#48c4f4" : "rgba(128,128,128,0.45)"),
+                borderRadius: 1,
+              }} />
+            ))}
+          </div>
+        </div>
+
+        <div className="disp-act-row">
+          <div className="disp-act-icon">🔊</div>
+          <div className="disp-act-main">
+            <div className="disp-act-name">Input volume</div>
+            <div className="disp-act-sub">macOS input level for the system-default microphone — at 0 it records pure silence.</div>
+          </div>
+          <div className="disp-act-trail" style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 200 }}>
+            <input type="range" min="0" max="100" step="1" value={vol == null ? 0 : vol} disabled={vol == null}
+              onChange={(e) => changeVol(e.target.value)} style={{ flex: 1 }} />
+            <span className="hint" style={{ minWidth: 30, textAlign: "right" }}>{vol == null ? "—" : vol}</span>
+          </div>
+        </div>
       </div>
-      <div className="hint">Applies to the very next recording — nothing needs restarting. If the saved microphone isn't present (unplugged, KVM switched), recording falls back to the system default and tells you with a toast.</div>
+      <div className="hint">Device changes apply to the very next recording — nothing needs restarting. If the saved microphone isn't present (unplugged, KVM switched), recording falls back to the system default and tells you with a toast. The level meter runs live on the selected device while this tab is open.</div>
     </>
   );
 }
@@ -185,7 +266,9 @@ export function SettingsBackend() {
       <div className="hint" style={{ minHeight: 18, marginTop: 6, color: status.color }}>{status.html}</div>
       <div className="hint">Select a server's radio to make it active — it re-checks and flips dictation on/off live. <b>Test</b> probes that server without changing the active one.</div>
 
-      <div className="row" style={{ marginTop: 12, alignItems: "center" }}>
+      <hr className="sep" />
+
+      <div className="row" style={{ marginTop: 0, alignItems: "center" }}>
         <label style={{ width: 150 }}>Model</label>
         <div className="hint" style={{ flex: 1, minHeight: 18 }}>
           {repo ? <><b>{repo}</b> &nbsp;·&nbsp; {modelState}</> : (caps ? modelState : "—")}
@@ -195,9 +278,13 @@ export function SettingsBackend() {
       </div>
       <div className="hint" style={{ marginTop: 4, wordBreak: "break-all" }}>{path}</div>
 
+      <hr className="sep" />
+
       <MicSection app={app} />
 
-      <div className="hint sgroup-intro" style={{ marginTop: 16 }}>Dictation timing</div>
+      <hr className="sep" />
+
+      <div className="hint sgroup-intro" style={{ marginTop: 0 }}>Dictation timing</div>
       <div className="row" style={{ marginTop: 8 }}>
         <label style={{ width: 200 }}>End-of-speech capture (ms)</label>
         <input type="number" min="0" max="1500" step="50" placeholder="250" style={{ flex: "0 0 90px" }} value={dictTail} onChange={(e) => setDictTail(e.target.value)} />

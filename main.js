@@ -526,8 +526,11 @@ function pickColor(taken) {
 function clampSplit(v) { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.max(20, Math.min(80, n)) : 60; }
 // Dictation end-of-speech timing buffers (read live by the Arcade). Integers, clamped.
 function clampInt(v, lo, hi, def) { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : def; }
-function clampDictTail(v) { return clampInt(v, 0, 1500, 250); } // ms of extra capture after ⌘D send
-function clampDictPad(v)  { return clampInt(v, 0, 1000, 200); } // ms of trailing silence padded onto the WAV
+// Users tend to hit ⌘D the instant the last word leaves their mouth — generous defaults
+// keep capturing through that (600ms tail) and give the ASR endpointer a clean finish
+// (400ms pad, synthetic silence = no added latency).
+function clampDictTail(v) { return clampInt(v, 0, 1500, 600); } // ms of extra capture after ⌘D send
+function clampDictPad(v)  { return clampInt(v, 0, 1000, 400); } // ms of trailing silence padded onto the WAV
 // Default global "summon" hotkey. ⌘⌥A — mnemonic (A = Arcade), low conflict,
 // rebindable in Settings → Shortcuts. Electron accelerator syntax.
 const DEFAULT_SUMMON = "Command+Alt+A";
@@ -840,6 +843,14 @@ ipcMain.handle("studio:dictate", (_e, payload) => {
 
 ipcMain.handle("app:get", () => loadAppSettings());
 ipcMain.handle("app:set", (_e, s) => saveAppSettings(s));
+// macOS input volume (0–100) for the SYSTEM DEFAULT input device — the OS-level gain
+// that silently zeroed the built-in mic once. Chromium can't touch it; osascript can.
+ipcMain.handle("mic:volume:get", () => new Promise((res) =>
+  execFile("osascript", ["-e", "input volume of (get volume settings)"], (e, out) => res(e ? -1 : parseInt(out, 10)))));
+ipcMain.handle("mic:volume:set", (_e, n) => new Promise((res) => {
+  const v = Math.max(0, Math.min(100, parseInt(n, 10) || 0));
+  execFile("osascript", ["-e", `set volume input volume ${v}`], (e) => res({ ok: !e, volume: v }));
+}));
 
 // ── dictation capability (single source of truth, owned here) ────────────────────
 // Renderers read the cached flag on load; main pushes "dictation:available" on change.
