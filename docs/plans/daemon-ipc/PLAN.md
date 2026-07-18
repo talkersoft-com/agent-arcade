@@ -1,6 +1,9 @@
 # Dictation Daemon — IPC Migration Plan (master)
 
-**Status:** DRAFT — awaiting review. Execution happens phase-by-phase at a later time.
+**Status:** EXECUTING — Phases 1–3 implemented + scripted-verified 2026-07-18
+(branch `fluffy-flourmill`). Phase 4 (irreversible stdio deletion) is GATED on:
+Todd's interactive `npm run dev` pass (phase-2 checklist), the Latitude harness
+run (phase-3 checklist), and the soak period phase-4 calls for.
 **Scope guard:** no npm package is published during this plan. All testing is local
 (`npm run dev` / `npm run start` on macOS, standalone harness on Windows 11).
 
