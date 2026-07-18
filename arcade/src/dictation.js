@@ -192,6 +192,8 @@ export function applyDictationSettings(app) {
   if (!app) return;
   if (Number.isFinite(app.dictation_tail_ms)) dictTailMs = app.dictation_tail_ms;
   if (Number.isFinite(app.dictation_pad_ms)) dictPadMs = app.dictation_pad_ms;
+  if (typeof app.mic_device_id === "string") micDeviceId = app.mic_device_id;
+  if (typeof app.mic_device_label === "string") micDeviceLabel = app.mic_device_label;
   if (app.recordingNavBehavior === "lock" || app.recordingNavBehavior === "send") {
     recordingNavBehavior = app.recordingNavBehavior;
   }
@@ -202,8 +204,29 @@ function clearRecState() { recAgentId = null; recAgentName = ""; recJobId = null
 // ── capture (Web Audio → mono 16-bit WAV) — reused from the reference verbatim ──
 let audioCtx, source, processor, stream, chunks = [];
 let lastRate = 48000;
+let micDeviceId = "";     // chosen input device (app.mic_device_id); "" = system default
+let micDeviceLabel = "";  // its label — fallback match when the id goes stale (KVM/dock re-enumeration)
+// Open the chosen mic: exact id → label match → system default (with a toast so a silent
+// fallback can't masquerade as the chosen device).
+async function openMicStream() {
+  if (micDeviceId) {
+    try { return await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: micDeviceId } } }); } catch {}
+    if (micDeviceLabel) {
+      try {
+        const devs = await navigator.mediaDevices.enumerateDevices();
+        const m = devs.find((d) => d.kind === "audioinput" && d.label === micDeviceLabel);
+        if (m) return await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: m.deviceId } } });
+      } catch {}
+    }
+    bus.emit("toast", { text: "Saved microphone not found — using system default", kind: "info" });
+  }
+  return navigator.mediaDevices.getUserMedia({ audio: true });
+}
 async function startCapture() {
-  stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  stream = await openMicStream();
+  // Report the device Chromium ACTUALLY opened (track.label is ground truth) so
+  // Studio's Microphone row can show a verifiable "Last recording: X".
+  try { const t = stream.getAudioTracks()[0]; if (t && t.label && arcade.micUsed) arcade.micUsed(t.label); } catch {}
   audioCtx = new AudioContext();
   source = audioCtx.createMediaStreamSource(stream);
   processor = audioCtx.createScriptProcessor(4096, 1, 1);

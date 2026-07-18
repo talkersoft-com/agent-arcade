@@ -73,7 +73,28 @@ export function apiUrlIsLocal(url) {
 // ── mic capture → WAV (ported 1:1) ──
 let audioCtx, source, processor, stream, chunks = [];
 export async function startCapture(deviceId) {
-  stream = await navigator.mediaDevices.getUserMedia({ audio: deviceId ? { deviceId: { exact: deviceId } } : true });
+  let label = "";
+  if (deviceId === undefined) {                       // no explicit device → use the saved choice
+    try { const a = await tester.getApp(); deviceId = (a && a.mic_device_id) || undefined; label = (a && a.mic_device_label) || ""; } catch {}
+  }
+  if (deviceId) {
+    // exact id → label match (id goes stale after KVM/dock re-enumeration) → system default
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } }); } catch {
+      stream = null;
+      if (label) {
+        try {
+          const devs = await navigator.mediaDevices.enumerateDevices();
+          const m = devs.find((d) => d.kind === "audioinput" && d.label === label);
+          if (m) stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: m.deviceId } } });
+        } catch {}
+      }
+    }
+    if (!stream) stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } else {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  }
+  // Persist which device Chromium ACTUALLY opened → Microphone row's "Last recording: X".
+  try { const t = stream.getAudioTracks()[0]; if (t && t.label) tester.setApp({ mic_last_used: t.label }); } catch {}
   audioCtx = new AudioContext();
   source = audioCtx.createMediaStreamSource(stream);
   processor = audioCtx.createScriptProcessor(4096, 1, 1);

@@ -8,6 +8,69 @@ function capsSummary(caps) {
   return `cleanup ${yn(caps.text_cleanup)} · image-gen ${yn(caps.image_gen)} · backend ${caps.backend || "?"}`;
 }
 
+// Microphone picker — dropdown only, no sound test. Persists app.mic_device_id +
+// mic_device_label; both capture paths read it (the Arcade re-reads settings on window
+// focus, so the change applies to the very next recording — nothing needs restarting).
+// "Last recording used" is Chromium's track.label from the most recent capture — ground
+// truth of which device actually recorded, not which one we asked for.
+function MicSection({ app }) {
+  const [mics, setMics] = useState([]);
+  const [selected, setSelected] = useState(app.mic_device_id || "");
+  const [lastUsed, setLastUsed] = useState(app.mic_last_used || "");
+  useEffect(() => { setSelected(app.mic_device_id || ""); setLastUsed(app.mic_last_used || ""); }, [app]);
+
+  async function refreshMics() {
+    // one getUserMedia so device labels are populated (they're blank without permission)
+    try { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); s.getTracks().forEach((t) => t.stop()); } catch {}
+    try { const d = await navigator.mediaDevices.enumerateDevices(); setMics(d.filter((x) => x.kind === "audioinput")); } catch {}
+  }
+  useEffect(() => {
+    refreshMics();
+    const onChange = () => refreshMics();
+    // re-read last-used on focus: the Arcade (a separate process) writes it after each recording
+    const onFocus = async () => { try { const a = await tester.getApp(); if (a) { setLastUsed(a.mic_last_used || ""); useStore.setState((s) => ({ app: { ...s.app, ...a } })); } } catch {} };
+    navigator.mediaDevices.addEventListener && navigator.mediaDevices.addEventListener("devicechange", onChange);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      navigator.mediaDevices.removeEventListener && navigator.mediaDevices.removeEventListener("devicechange", onChange);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, []);
+
+  async function selectMic(id) {
+    setSelected(id);
+    const label = id ? ((mics.find((m) => m.deviceId === id) || {}).label || "") : "";
+    const saved = await tester.setApp({ mic_device_id: id, mic_device_label: label });
+    useStore.setState((s) => ({ app: { ...s.app, ...saved } }));
+  }
+
+  return (
+    <>
+      <div className="hint sgroup-intro" style={{ marginTop: 16 }}>Microphone</div>
+      <div className="disp-actions" style={{ marginTop: 0, borderTop: "none", paddingTop: 0 }}>
+        <div className="disp-act-row">
+          <div className="disp-act-icon">🎙</div>
+          <div className="disp-act-main">
+            <div className="disp-act-name">Input device</div>
+            <div className="disp-act-sub">
+              {lastUsed
+                ? <>Last recording used: <b>{lastUsed}</b></>
+                : "No recordings yet — after your next dictation, the device it actually used shows here."}
+            </div>
+          </div>
+          <div className="disp-act-trail">
+            <select value={selected} onChange={(e) => selectMic(e.target.value)} style={{ maxWidth: 280 }}>
+              <option value="">System default</option>
+              {mics.map((m, i) => <option key={m.deviceId || i} value={m.deviceId}>{m.label || `Microphone ${i + 1}`}</option>)}
+            </select>
+          </div>
+        </div>
+      </div>
+      <div className="hint">Applies to the very next recording — nothing needs restarting. If the saved microphone isn't present (unplugged, KVM switched), recording falls back to the system default and tells you with a toast.</div>
+    </>
+  );
+}
+
 export function SettingsBackend() {
   const servers = useStore((s) => s.servers);
   const activeServer = useStore((s) => s.activeServer);
@@ -131,6 +194,8 @@ export function SettingsBackend() {
         <button style={{ marginLeft: 6 }} disabled={!present} title={present ? "Delete the downloaded model on the backend" : "no model to remove"} onClick={modelRemove}>Remove model</button>
       </div>
       <div className="hint" style={{ marginTop: 4, wordBreak: "break-all" }}>{path}</div>
+
+      <MicSection app={app} />
 
       <div className="hint sgroup-intro" style={{ marginTop: 16 }}>Dictation timing</div>
       <div className="row" style={{ marginTop: 8 }}>
