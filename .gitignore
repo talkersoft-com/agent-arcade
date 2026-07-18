@@ -4,6 +4,9 @@
 *.md
 !README.md
 
+# reviewed execution plans are versioned (exception to the deck-wide *.md rule)
+!docs/plans/**
+
 # build + deps
 node_modules/
 studio/node_modules/
