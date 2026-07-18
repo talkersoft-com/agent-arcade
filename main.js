@@ -71,6 +71,11 @@ const arcade = require("./arcade/main.js");
 // copy. A no-op in dev (the path has no "app.asar" segment).
 const unpacked = (p) => p.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
 const GO_BIN = unpacked(path.join(__dirname, "go", "bin", "dictation-go"));
+// Daemon IPC (docs/plans/daemon-ipc/PLAN.md): default transport is the shared
+// dictation daemon over a local socket; DICTATE_IPC=stdio flips back to the
+// legacy per-window child until Phase 4 removes it.
+const USE_STDIO = process.env.DICTATE_IPC === "stdio";
+const { connectDictation } = require("./lib/dictation-client");
 
 // WezTerm "last leg": deliver cleaned text into a WezTerm/Claude pane via the
 // bundled Go bridge binary (which itself shells out to `wezterm cli`).
@@ -632,7 +637,30 @@ function saveAgents(agents) {
   return loadAgents();
 }
 // ── Go bridge ─────────────────────────────────────────────────────────────────
+// Daemon-mode client: one connection to the shared daemon, ensured (spawned by
+// path) whenever nobody is serving. handleGo consumes its messages unchanged.
+let dc = null;
+function ensureDaemonClient() {
+  if (dc) return dc;
+  dc = connectDictation({ client: "studio", appVersion: app.getVersion(), bin: GO_BIN, apiUrl: loadApiUrl });
+  dc.on("message", handleGo);
+  dc.on("up", () => logLine("info", "dictation daemon connected"));
+  dc.on("down", () => logLine("err", "dictation daemon unavailable — reconnecting"));
+  dc.on("log", (m) => logLine("info", `daemon-client: ${m}`));
+  return dc;
+}
 function spawnGo() {
+  if (!USE_STDIO) {
+    if (!dictationAvailable) return;
+    if (!loadApiUrl()) {
+      const msg = `No API URL configured — set "api_url:" in ${SETTINGS_PATH} (e.g. api_url: http://host:9100)`;
+      logLine("err", msg);
+      toRenderer("dictation:event", { type: "error", stage: "spawn", error: msg });
+      return;
+    }
+    ensureDaemonClient();
+    return;
+  }
   // Gate the bridge on the cached probe: if dictation isn't available (no backend /
   // not ready) there's nothing to transcribe with, so don't spawn a process that
   // would only fail reaching a missing backend.
@@ -661,6 +689,7 @@ function spawnGo() {
   readline.createInterface({ input: go.stderr }).on("line", (l) => logLine("go-stderr", l));
 }
 function writeGo(obj) {
+  if (!USE_STDIO) return !!(dc && dc.send(obj));
   if (!go || go.killed) return false;
   go.stdin.write(JSON.stringify(obj) + "\n");
   return true;
@@ -852,6 +881,20 @@ ipcMain.handle("mic:volume:set", (_e, n) => new Promise((res) => {
   execFile("osascript", ["-e", `set volume input volume ${v}`], (e) => res({ ok: !e, volume: v }));
 }));
 
+// ── dictation daemon (Preferences ▸ "Dictation daemon" action row) ───────────────
+// info() feeds the chip (version · uptime · clients); restart sends shutdown and
+// lets the ensure/supervision loops revive it — the chip's uptime reset is the
+// user-visible proof the restart took effect.
+ipcMain.handle("daemon:info", async () => {
+  if (USE_STDIO) return { ok: false, error: "stdio mode (DICTATE_IPC=stdio)" };
+  try { const info = await ensureDaemonClient().info(); return { ok: true, info }; }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.handle("daemon:restart", () => {
+  if (USE_STDIO) return { ok: false, error: "stdio mode (DICTATE_IPC=stdio)" };
+  return { ok: !!ensureDaemonClient().shutdown("user_restart") };
+});
+
 // ── dictation capability (single source of truth, owned here) ────────────────────
 // Renderers read the cached flag on load; main pushes "dictation:available" on change.
 ipcMain.handle("dictation:get", () => getDictation());
@@ -932,8 +975,16 @@ ipcMain.handle("model:remove", async () => {
 });
 
 // Start/stop the Go bridge to match availability after a re-probe (no restart needed).
-function startDictationBridge() { if (dictationAvailable && (!go || go.killed)) spawnGo(); }
-function stopDictationBridge() { if (go && !go.killed) { try { go.kill(); } catch {} go = null; } }
+// Daemon mode: the connection persists across availability flaps — the probe gates
+// the UI, and an idle daemon serving nobody costs nothing. Only stdio kills a child.
+function startDictationBridge() {
+  if (!USE_STDIO) { if (dictationAvailable) spawnGo(); return; }
+  if (dictationAvailable && (!go || go.killed)) spawnGo();
+}
+function stopDictationBridge() {
+  if (!USE_STDIO) return;
+  if (go && !go.killed) { try { go.kill(); } catch {} go = null; }
+}
 
 // ── Global hotkeys ─────────────────────────────────────────────────────────────
 // The PERSISTENT launcher process owns the global summon hotkey — a disposable
@@ -1708,6 +1759,8 @@ app.on("second-instance", (_e, argv) => {
 // launcher is the persistent piece that relaunches Studio/Arcade — so "close" means
 // gone, not a lingering invisible process. Combined with the single-instance lock,
 // this keeps it to exactly one app process.
-app.on("window-all-closed", () => { if (go && !go.killed) go.kill(); app.quit(); });
-app.on("before-quit", () => { if (go && !go.killed) go.kill(); });
+// The daemon OUTLIVES windows and app instances by design — quitting an app only
+// closes its client connection; the launcher's quit path owns daemon shutdown.
+app.on("window-all-closed", () => { if (go && !go.killed) go.kill(); if (dc) dc.close(); app.quit(); });
+app.on("before-quit", () => { if (go && !go.killed) go.kill(); if (dc) { dc.close(); dc = null; } });
 app.on("will-quit", () => globalShortcut.unregisterAll());

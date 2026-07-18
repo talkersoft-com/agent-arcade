@@ -23,6 +23,10 @@ const ROOT = path.join(__dirname, "..");
 // config); rewrite to the unpacked copy. No-op in dev.
 const unpacked = (p) => p.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
 const GO_BIN = unpacked(path.join(ROOT, "go", "bin", "dictation-go"));
+// Daemon IPC (docs/plans/daemon-ipc/PLAN.md): shared daemon over a local socket
+// by default; DICTATE_IPC=stdio flips back to the legacy child until Phase 4.
+const USE_STDIO = process.env.DICTATE_IPC === "stdio";
+const { connectDictation } = require(path.join(ROOT, "lib", "dictation-client.js"));
 const WEZ_BRIDGE = unpacked(path.join(ROOT, "wezterm-bridge", "bin", "wezterm-bridge"));
 // Official prebuilt WezTerm.app, packed into the npm tarball at publish time (see
 // .github/workflows/publish.yml). Preferred so a fresh `npm i -g` works with no
@@ -493,6 +497,16 @@ ipcMain.handle("arcade:shellResize", (_e, payload) => {
 function killShells() { for (const proc of shells.values()) { try { proc.kill(); } catch {} } shells.clear(); }
 
 // ── shared binaries ────────────────────────────────────────────────────────────
+// Daemon-mode client: one connection to the shared daemon; handleGo consumes its
+// messages exactly as it consumed the stdio child's stdout.
+let dc = null;
+function ensureDaemonClient() {
+  if (dc) return dc;
+  dc = connectDictation({ client: "arcade", appVersion: app.getVersion(), bin: GO_BIN, apiUrl: loadApiUrl });
+  dc.on("message", handleGo);
+  dc.on("down", () => console.error("[arcade] dictation daemon unavailable — reconnecting"));
+  return dc;
+}
 function spawnGo() {
   // Gate on availability (Studio's probe): no reachable/ready backend → no bridge.
   if (!dictationState.available) return;
@@ -501,11 +515,15 @@ function spawnGo() {
     toRenderer("status", { state: "error", msg: `No API URL configured — set "api_url:" in ${SETTINGS} (e.g. api_url: http://host:9100)` });
     return;
   }
+  if (!USE_STDIO) { ensureDaemonClient(); return; }
   go = spawn(GO_BIN, [], { env: { ...process.env, DICTATION_API_URL: apiUrl }, stdio: ["pipe", "pipe", "pipe"] });
   go.on("error", (e) => toRenderer("status", { state: "error", msg: `bridge: ${e.message}` }));
   readline.createInterface({ input: go.stdout }).on("line", (l) => { const t = l.trim(); if (!t) return; let m; try { m = JSON.parse(t); } catch { return; } handleGo(m); });
 }
-function writeGo(o) { if (go && !go.killed) go.stdin.write(JSON.stringify(o) + "\n"); }
+function writeGo(o) {
+  if (!USE_STDIO) { if (dc) dc.send(o); return; }
+  if (go && !go.killed) go.stdin.write(JSON.stringify(o) + "\n");
+}
 function runWez(args) {
   return new Promise((res, rej) => execFile(WEZ_BRIDGE, args, { env: weztermEnv(), maxBuffer: 4 << 20 },
     (e, so, se) => {
@@ -801,6 +819,7 @@ function toggleArcade() {
   return true;
 }
 // Kill the Arcade's Go bridge when the app quits (Studio owns app lifecycle now).
-app.on("before-quit", () => { if (go && !go.killed) go.kill(); killShells(); });
+// Daemon mode: only the client connection closes — the daemon outlives windows.
+app.on("before-quit", () => { if (go && !go.killed) go.kill(); if (dc) { dc.close(); dc = null; } killShells(); });
 
 module.exports = { openArcade, onArcadeClosed, toggleArcade, isArcadeVisible, onSetupRequested, broadcastDictation };

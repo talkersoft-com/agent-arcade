@@ -139,15 +139,71 @@ function showAbout() {
   });
 }
 
+// ── dictation daemon supervision ────────────────────────────────────────────────
+// The launcher is the resident process, so it supervises the shared daemon: spawn
+// as a CHILD, respawn on exit with capped backoff. Every app also ensures the
+// daemon client-side (lib/dictation-client.js), so this is belt-and-suspenders —
+// healing even with zero windows open. Exit-0 within 2s means we LOST the bind
+// race (a client-spawned daemon already serves): don't respawn-loop against the
+// lock — connect a monitor client instead, whose ensure loop revives the daemon
+// if that winner ever dies.
+const { connectDictation, shutdownDaemon } = require(path.join(ROOT, "lib", "dictation-client.js"));
+const GO_BIN = path.join(ROOT, "go", "bin", "dictation-go").replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
+function readApiUrl() {
+  try {
+    const doc = yaml.load(fs.readFileSync(SETTINGS_PATH, "utf8")) || {};
+    return (doc.api_url || "").toString().trim() || (process.env.DICTATION_API_URL || "").trim();
+  } catch { return (process.env.DICTATION_API_URL || "").trim(); }
+}
+let daemonChild = null;
+let monitorClient = null;
+let quitting = false;
+let daemonBackoff = 250;
+function superviseDaemon() {
+  if (quitting || process.env.DICTATE_IPC === "stdio") return;
+  const apiUrl = readApiUrl();
+  if (!apiUrl || !fs.existsSync(GO_BIN)) {           // not configured/built yet —
+    setTimeout(superviseDaemon, 30000); return;      // check again, don't crash-loop
+  }
+  const t0 = Date.now();
+  daemonChild = spawn(GO_BIN, ["--daemon"], { env: { ...process.env, DICTATION_API_URL: apiUrl }, stdio: "ignore" });
+  daemonChild.once("error", (e) => { console.error("[launcher] daemon spawn:", e.message); daemonChild = null; setTimeout(superviseDaemon, 10000); });
+  daemonChild.once("exit", (code) => {
+    daemonChild = null;
+    if (quitting) return;
+    if (code === 0 && Date.now() - t0 < 2000) { monitorDaemon(); return; } // lost the bind — someone else serves
+    const delay = daemonBackoff;
+    daemonBackoff = Math.min(daemonBackoff * 2, 10000);
+    console.error(`[launcher] daemon exited (code=${code}) — respawn in ${delay}ms`);
+    setTimeout(superviseDaemon, delay);
+  });
+  setTimeout(() => { if (daemonChild) daemonBackoff = 250; }, 60000); // 60s healthy → reset backoff
+}
+function monitorDaemon() {
+  if (monitorClient || quitting) return;
+  monitorClient = connectDictation({ client: "launcher", appVersion: app.getVersion(), bin: GO_BIN, apiUrl: readApiUrl });
+}
+
 // Quit EVERYTHING: the Arcade/Studio run as detached sibling processes (not
 // children), so app.quit() alone would leave them behind. SIGTERM each Electron
 // process of THIS install — graceful, so every instance runs its before-quit
-// (killing its Go bridge; warn_on_exit still gets its say). The launcher matches
-// the pattern too and exits the same way; app.quit() covers the nothing-matched
-// case. WezTerm is left alone on purpose — the mux keeps agent sessions alive.
+// (closing its daemon client; warn_on_exit still gets its say) — THEN stop the
+// daemon (clients first, so no ensure loop respawns it), then exit. WezTerm is
+// left alone on purpose — the mux keeps agent sessions alive.
 function quitAgentArcade() {
   const { execFile } = require("child_process");
-  execFile("pkill", ["-f", `[Ee]lectron ${ROOT}`], () => app.quit());
+  quitting = true; // no supervised respawn racing the shutdown
+  if (monitorClient) { try { monitorClient.close(); } catch {} monitorClient = null; }
+  // pgrep + per-pid SIGTERM instead of pkill: pkill's pattern matches THIS
+  // launcher too, and dying mid-callback would strand the daemon. Excluding our
+  // own pid lets us sequence clients-then-daemon and only then exit ourselves.
+  execFile("pgrep", ["-f", `[Ee]lectron ${ROOT}`], (_e, out) => {
+    const pids = (out || "").split("\n").map((s) => parseInt(s, 10)).filter((n) => Number.isFinite(n) && n !== process.pid);
+    for (const p of pids) { try { process.kill(p, "SIGTERM"); } catch {} }
+    // Give the apps a beat to run before-quit (close their daemon clients) so
+    // no ensure loop respawns the daemon we're about to stop.
+    setTimeout(() => shutdownDaemon("quit").then(() => app.quit()), 400);
+  });
 }
 
 function buildMenu() {
@@ -185,6 +241,7 @@ app.whenReady().then(() => {
   try { fs.unlinkSync(SUSPEND_PATH); } catch {} // clear a stale sentinel from a crashed recording
   registerSummon();                   // global summon hotkey (⌘⌥A or the user's binding)
   watchConfig();                      // live-apply rebinds from Settings → Shortcuts
+  superviseDaemon();                  // resident supervision of the shared dictation daemon
   if (!hasAnyAgents()) launchArcade(); // fresh install → the Arcade's Welcome (start of the tour); else stay hidden
 });
 // No windows: the launcher must stay resident. Never quit on window-all-closed.
