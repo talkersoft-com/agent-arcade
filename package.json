@@ -50,7 +50,6 @@
     "prod:nobuild": "npm run kill:prod && env -u DICTATE_DEV electron . --launcher",
     "dev": "npm run kill:dev && npm run build && DICTATE_DEV=1 electron . --launcher",
     "dev:nobuild": "npm run kill:dev && DICTATE_DEV=1 electron . --launcher",
-    "backend": "bash scripts/backend.sh",
     "daemon": "go/bin/dictation-go --daemon",
     "daemon:smoke": "node scripts/daemon-smoke.js",
     "arcade": "npm run build && electron . --arcade",
