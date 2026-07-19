@@ -63,3 +63,18 @@ the launcher; Preferences gains the restart row.
 - [ ] Restart row: button click → chip uptime resets; recording during restart
       fails gracefully with today's error toast, next one succeeds.
 - [ ] `DICTATE_IPC=stdio npm run dev` → old path still fully works (rollback proof).
+
+## Scripted pre-verification (2026-07-18, execution session)
+
+Lib-level drills run against the real daemon + live backend before any
+interactive pass (scratchpad `client-drill.js` / `upgrade-drill.js`):
+
+- ensure-spawn from cold (no daemon) → welcome/up in 257 ms; dictate → result.
+- `kill -9` mid-session → `down` → self-heal → `up` in **763 ms** (< 5 s
+  budget); post-heal dictate green.
+- `touch` binary + new connection → old daemon stale-exits; existing client A
+  and new client B both converge on the NEW daemon pid, zero manual steps.
+- `node --check` green on both mains, launcher, lib, preload; `build:js` green.
+
+The checklist above still needs the interactive `npm run dev` pass (real ⌘D
+dictation, lid-close, tray quit, restart-row flicker, stdio rollback proof).

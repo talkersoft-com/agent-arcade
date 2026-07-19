@@ -1,30 +1,35 @@
-// Command dictation-go is the API/transport bridge for Agent Arcade Studio.
+// Command dictation-go is the dictation daemon for Agent Arcade.
 //
-// Capture now happens in the Electron renderer (reliable mic + device selection
-// on macOS); this binary owns the API side: health checks and uploading a WAV to
-// the dictation API. It is a long-lived child of the Electron main process,
-// driven over NDJSON (one JSON object per line) on stdin/stdout, correlated by
-// job_id. It also has a standalone --selftest mode that proves the API works
-// without Electron at all.
+// Capture happens in the Electron renderer (reliable mic + device selection);
+// this binary owns the API side: health checks and uploading WAVs to the
+// dictation API. ONE daemon serves every client (Studio, Arcade, launcher,
+// smoke scripts) over a local transport — a Unix domain socket on macOS/Linux
+// (~/.hv/dictation.sock), a named pipe on Windows
+// (\\.\pipe\agent-arcade-dictation) — speaking NDJSON protocol v1, correlated
+// by job_id. See docs/plans/daemon-ipc/PLAN.md.
 //
-//	Electron -> Go (stdin):
+//	client -> daemon:
+//	  {"type":"hello","client":"arcade|studio|launcher|cli","app_version":"x.y.z","protocol":1}   (MUST be first)
 //	  {"type":"health"}
 //	  {"type":"dictate","job_id":"<id>","wav_path":"/tmp/x.wav","source":"mic|test"}
+//	  {"type":"info"}
+//	  {"type":"shutdown","reason":"user_restart|config_change|quit"}
 //
-//	Go -> Electron (stdout):
-//	  {"type":"ready","api_url":"...","healthy":true}
-//	  {"type":"log","level":"info","msg":"..."}            human-readable progress
-//	  {"type":"health_result","ok":true,"detail":"..."}
-//	  {"type":"status","job_id":"<id>","state":"sending"}
-//	  {"type":"result","job_id":"<id>","source":"mic","raw_text":"...","cleaned_text":"...","ms":574}
-//	  {"type":"error","job_id":"<id>","stage":"...","error":"..."}
+//	daemon -> client:
+//	  {"type":"welcome","daemon_version":"x.y.z","protocol":1,"api_url":"...","healthy":true}
+//	  {"type":"stale","reason":"binary changed on disk"}   then the daemon exits 0
+//	  {"type":"status","job_id":"<id>","state":"sending"}                     unicast to owner
+//	  {"type":"result","job_id":"<id>","raw_text":"...","cleaned_text":"...","ms":574}  unicast
+//	  {"type":"error","job_id":"<id>","stage":"...","error":"..."}            unicast
+//	  {"type":"health_result","ok":true,"detail":"..."}                       broadcast
+//	  {"type":"log","level":"info","job_id":"<id>?","msg":"..."}              broadcast
+//	  {"type":"info_result","daemon_version":"...","uptime_s":123,"clients":["arcade"]}
 //
-// Diagnostics also go to stderr. API endpoint: DICTATION_API_URL.
+// Modes: --daemon (serve) and --selftest [wav] (prove the API end-to-end, no
+// sockets). Diagnostics go to stderr. API endpoint: DICTATION_API_URL.
 package main
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -38,6 +43,12 @@ type inMsg struct {
 	Source    string `json:"source"`
 	DictationOptions string `json:"dictation_options"` // comma-separated dictation-option keys
 	Cleanup          *bool  `json:"cleanup"`           // nil = default on; false = skip AI cleanup layer
+
+	// Daemon protocol v1 (hello/shutdown) — unused in stdio mode.
+	Client     string `json:"client"`      // arcade | studio | launcher | cli
+	AppVersion string `json:"app_version"`
+	Protocol   int    `json:"protocol"`
+	Reason     string `json:"reason"`
 }
 
 type outMsg struct {
@@ -58,6 +69,13 @@ type outMsg struct {
 	Level       string `json:"level,omitempty"`
 	Msg         string `json:"msg,omitempty"`
 	Detail      string `json:"detail,omitempty"`
+
+	// Daemon protocol v1 (welcome/stale/info_result) — unused in stdio mode.
+	DaemonVersion string   `json:"daemon_version,omitempty"`
+	Protocol      int      `json:"protocol,omitempty"`
+	UptimeS       int64    `json:"uptime_s,omitempty"`
+	Clients       []string `json:"clients,omitempty"`
+	Reason        string   `json:"reason,omitempty"`
 }
 
 func main() {
@@ -76,47 +94,16 @@ func main() {
 		os.Exit(runSelftest(api, apiURL, os.Args[2:]))
 	}
 
-	out := newEmitter()
-	log := func(format string, a ...any) {
-		msg := fmt.Sprintf(format, a...)
-		out.emit(outMsg{Type: "log", Level: "info", Msg: msg})
-		fmt.Fprintln(os.Stderr, "dictation-go:", msg)
+	// --daemon: serve protocol v1 to many clients over the local socket/pipe.
+	if len(os.Args) > 1 && (os.Args[1] == "--daemon" || os.Args[1] == "-daemon") {
+		os.Exit(runDaemon(api, apiURL))
 	}
 
-	healthy := api.healthy()
-	out.emit(outMsg{Type: "ready", APIURL: apiURL, Healthy: &healthy})
-	log("ready — api=%s healthy=%v", apiURL, healthy)
-
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var msg inMsg
-		if err := json.Unmarshal([]byte(line), &msg); err != nil {
-			out.emit(outMsg{Type: "error", Stage: "protocol", Error: "bad json: " + err.Error()})
-			continue
-		}
-		switch msg.Type {
-		case "health":
-			ok := api.healthy()
-			detail := apiURL
-			if !ok {
-				detail = "no 200 from " + apiURL + "/health"
-			}
-			out.emit(outMsg{Type: "health_result", OK: &ok, Detail: detail})
-			log("health check: ok=%v (%s)", ok, apiURL)
-		case "dictate":
-			handleDictate(out, log, api, msg)
-		default:
-			out.emit(outMsg{Type: "error", JobID: msg.JobID, Stage: "protocol", Error: "unknown type: " + msg.Type})
-		}
-	}
+	fmt.Fprintln(os.Stderr, "usage: dictation-go --daemon | --selftest [wav]")
+	os.Exit(2)
 }
 
-func handleDictate(out *emitter, log func(string, ...any), api *apiClient, msg inMsg) {
+func handleDictate(out sink, log func(string, ...any), api *apiClient, msg inMsg) {
 	src := msg.Source
 	if src == "" {
 		src = "mic"

@@ -8,6 +8,66 @@ function capsSummary(caps) {
   return `cleanup ${yn(caps.text_cleanup)} · image-gen ${yn(caps.image_gen)} · backend ${caps.backend || "?"}`;
 }
 
+// Dictation daemon action row — the manual escape hatch for the shared daemon.
+// The chip is the daemon's OWN answer over the socket (version · uptime ·
+// connected clients), not a guess. Restart sends shutdown("user_restart"); the
+// launcher/client ensure loops revive it, and the uptime resetting to seconds
+// is the visible proof the restart took effect (mic-row philosophy).
+function DaemonSection() {
+  const [info, setInfo] = useState(null); // {daemon_version, uptime_s, clients}
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const refresh = async () => {
+    try {
+      const r = await tester.daemonInfo();
+      if (r && r.ok) { setInfo(r.info); setErr(""); } else { setInfo(null); setErr((r && r.error) || "not connected"); }
+    } catch (e) { setInfo(null); setErr(e.message || "not connected"); }
+  };
+  useEffect(() => {
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, []);
+  const restart = async () => {
+    setBusy(true);
+    setInfo(null); // chip goes blank while the old daemon dies — half the proof
+    try { await tester.daemonRestart(); } catch {}
+    const t0 = Date.now();
+    const poll = async () => {
+      try {
+        const r = await tester.daemonInfo();
+        if (r && r.ok && (r.info.uptime_s || 0) < 30) { setInfo(r.info); setErr(""); setBusy(false); return; }
+      } catch {}
+      if (Date.now() - t0 < 15000) setTimeout(poll, 500);
+      else { setErr("daemon did not come back — check the launcher log"); setBusy(false); }
+    };
+    setTimeout(poll, 600);
+  };
+  const fmtUp = (s) => {
+    s = s || 0;
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    return h ? `${h}h ${m}m` : m ? `${m}m` : `${s}s`;
+  };
+  return (
+    <div className="disp-actions" style={{ marginTop: 0, borderTop: "none", paddingTop: 0 }}>
+      <div className="disp-act-row">
+        <div className="disp-act-icon">🔄</div>
+        <div className="disp-act-main">
+          <div className="disp-act-name">Dictation daemon</div>
+          <div className="disp-act-sub">
+            {info
+              ? <>v{info.daemon_version} · up {fmtUp(info.uptime_s)} · {(info.clients || []).length} client{(info.clients || []).length === 1 ? "" : "s"} ({(info.clients || []).join(", ") || "none"})</>
+              : (busy ? "restarting…" : err || "connecting…")}
+          </div>
+        </div>
+        <div className="disp-act-trail">
+          <button onClick={restart} disabled={busy}>{busy ? "Restarting…" : "Restart"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Microphone picker — dropdown only, no sound test. Persists app.mic_device_id +
 // mic_device_label; both capture paths read it (the Arcade re-reads settings on window
 // focus, so the change applies to the very next recording — nothing needs restarting).
@@ -297,6 +357,11 @@ export function SettingsBackend() {
         <button style={{ marginLeft: 8 }} onClick={saveTiming}>Save</button>
       </div>
       <div className="hint">How long the Arcade keeps capturing after you hit <code>⌘D</code> to send, and how much silence it pads onto the end. Higher = less chance of clipping the last word; adds latency. Tail 0–1500, silence 0–1000. Applies live in the Arcade.</div>
+
+      <hr className="sep" />
+
+      <DaemonSection />
+      <div className="hint">One shared daemon serves every window over a local socket. It heals itself (kill it and it comes back); Restart is the manual escape hatch — the uptime resetting to seconds is your proof it took effect.</div>
     </div>
   );
 }
