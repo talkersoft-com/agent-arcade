@@ -15,7 +15,6 @@ const path = require("path");
 const os = require("os");
 const fs = require("fs");
 const crypto = require("crypto");
-const readline = require("readline");
 const yaml = require("js-yaml");
 
 const ROOT = path.join(__dirname, "..");
@@ -23,6 +22,9 @@ const ROOT = path.join(__dirname, "..");
 // config); rewrite to the unpacked copy. No-op in dev.
 const unpacked = (p) => p.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
 const GO_BIN = unpacked(path.join(ROOT, "go", "bin", "dictation-go"));
+// Dictation IPC (docs/plans/daemon-ipc/PLAN.md): one shared daemon over a local
+// socket serves every window — NDJSON protocol v1 via lib/dictation-client.js.
+const { connectDictation } = require(path.join(ROOT, "lib", "dictation-client.js"));
 const WEZ_BRIDGE = unpacked(path.join(ROOT, "wezterm-bridge", "bin", "wezterm-bridge"));
 // Official prebuilt WezTerm.app, packed into the npm tarball at publish time (see
 // .github/workflows/publish.yml). Preferred so a fresh `npm i -g` works with no
@@ -76,7 +78,7 @@ function resolveClaude() {
   return "claude";
 }
 
-let win = null, go = null, jobSeq = 0;
+let win = null, jobSeq = 0;
 let onClosed = null; // Studio sets this via onArcadeClosed() to resurface when the Arcade closes
 const pending = {}; // jobId -> { agentId }
 // Dictation availability is OWNED by Studio's main.js (it does the single probe);
@@ -92,7 +94,7 @@ function broadcastDictation(payload) {
   toRenderer("dictation:available", dictationState);
   // If the Arcade is already up and the bridge wasn't started yet (e.g. the probe
   // resolved after an arcade-only launch), start it now that dictation is available.
-  if (dictationState.available && goStarted && (!go || go.killed)) spawnGo();
+  if (dictationState.available && goStarted) spawnGo(); // idempotent — ensures the daemon client
 }
 
 // ── shared YAML store (read-only here) ─────────────────────────────────────────
@@ -493,6 +495,16 @@ ipcMain.handle("arcade:shellResize", (_e, payload) => {
 function killShells() { for (const proc of shells.values()) { try { proc.kill(); } catch {} } shells.clear(); }
 
 // ── shared binaries ────────────────────────────────────────────────────────────
+// Daemon-mode client: one connection to the shared daemon; handleGo consumes its
+// messages exactly as it consumed the stdio child's stdout.
+let dc = null;
+function ensureDaemonClient() {
+  if (dc) return dc;
+  dc = connectDictation({ client: "arcade", appVersion: app.getVersion(), bin: GO_BIN, apiUrl: loadApiUrl });
+  dc.on("message", handleGo);
+  dc.on("down", () => console.error("[arcade] dictation daemon unavailable — reconnecting"));
+  return dc;
+}
 function spawnGo() {
   // Gate on availability (Studio's probe): no reachable/ready backend → no bridge.
   if (!dictationState.available) return;
@@ -501,11 +513,9 @@ function spawnGo() {
     toRenderer("status", { state: "error", msg: `No API URL configured — set "api_url:" in ${SETTINGS} (e.g. api_url: http://host:9100)` });
     return;
   }
-  go = spawn(GO_BIN, [], { env: { ...process.env, DICTATION_API_URL: apiUrl }, stdio: ["pipe", "pipe", "pipe"] });
-  go.on("error", (e) => toRenderer("status", { state: "error", msg: `bridge: ${e.message}` }));
-  readline.createInterface({ input: go.stdout }).on("line", (l) => { const t = l.trim(); if (!t) return; let m; try { m = JSON.parse(t); } catch { return; } handleGo(m); });
+  ensureDaemonClient();
 }
-function writeGo(o) { if (go && !go.killed) go.stdin.write(JSON.stringify(o) + "\n"); }
+function writeGo(o) { if (dc) dc.send(o); }
 function runWez(args) {
   return new Promise((res, rej) => execFile(WEZ_BRIDGE, args, { env: weztermEnv(), maxBuffer: 4 << 20 },
     (e, so, se) => {
@@ -800,7 +810,8 @@ function toggleArcade() {
   app.focus({ steal: true });
   return true;
 }
-// Kill the Arcade's Go bridge when the app quits (Studio owns app lifecycle now).
-app.on("before-quit", () => { if (go && !go.killed) go.kill(); killShells(); });
+// Close the Arcade's daemon-client connection when the app quits — the daemon
+// itself outlives windows by design (the launcher's quit path owns its shutdown).
+app.on("before-quit", () => { if (dc) { dc.close(); dc = null; } killShells(); });
 
 module.exports = { openArcade, onArcadeClosed, toggleArcade, isArcadeVisible, onSetupRequested, broadcastDictation };

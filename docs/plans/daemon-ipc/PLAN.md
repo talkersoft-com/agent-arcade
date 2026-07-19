@@ -1,6 +1,11 @@
 # Dictation Daemon — IPC Migration Plan (master)
 
-**Status:** DRAFT — awaiting review. Execution happens phase-by-phase at a later time.
+**Status:** CODE COMPLETE (all 4 phases, 2026-07-18, branch `fluffy-flourmill`) —
+Todd waived the phase-4 soak gate ("just cut it") because the RELEASE is the real
+gate: nothing goes hive→main until his interactive pass (phase-2 checklist) and
+the Latitude harness run (phase-3 checklist) prove the daemon pattern works as
+good or better than 0.2.22. stdio is deleted; there is no env rollback anymore —
+rollback is now "don't release" (main still holds the stdio-era 0.2.22 code).
 **Scope guard:** no npm package is published during this plan. All testing is local
 (`npm run dev` / `npm run start` on macOS, standalone harness on Windows 11).
 

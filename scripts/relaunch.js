@@ -29,6 +29,14 @@ function candidates() {
     const pid = parseInt(m[1], 10), cmd = m[2];
     if (pid === process.pid || pid === process.ppid) continue;
     if (/--type=/.test(cmd)) continue;                 // Electron helper/renderer children — killing the main is enough
+    // The shared dictation daemon: dev iteration needs a clean slate (a stale
+    // daemon would keep serving old code until a client connection staled it).
+    // Dev vs prod daemons are told apart the same way as the apps — the daemon
+    // inherits DICTATE_DEV from whichever client/launcher spawned it.
+    if (/[/\\]dictation-go(\.exe)?\s+--daemon\b/.test(cmd)) {
+      if ((mode === "dev") === /\bDICTATE_DEV=1\b/.test(cmd)) pids.add(pid);
+      continue;
+    }
     const isSource = cmd.includes(PROJ) && /[/\\]electron[/\\]dist[/\\]/i.test(cmd);
     const isPackaged = /Agent Arcade\.app\//.test(cmd);
     const isDev = /\bDICTATE_DEV=1\b/.test(cmd);

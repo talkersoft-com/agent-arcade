@@ -9,6 +9,9 @@ contextBridge.exposeInMainWorld("tester", {
   getApp: () => ipcRenderer.invoke("app:get"),
   setApp: (s) => ipcRenderer.invoke("app:set", s),
   micVolGet: () => ipcRenderer.invoke("mic:volume:get"),
+  // dictation daemon (Preferences restart row): shared-daemon status + restart
+  daemonInfo: () => ipcRenderer.invoke("daemon:info"),
+  daemonRestart: () => ipcRenderer.invoke("daemon:restart"),
   micVolSet: (n) => ipcRenderer.invoke("mic:volume:set", n),
   // global hotkeys (Settings → Shortcuts)
   trayIcon: () => ipcRenderer.invoke("ui:trayIcon"),

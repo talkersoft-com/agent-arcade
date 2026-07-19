@@ -38,7 +38,7 @@ day a Windows port begins.
      ```
    - `daemon-smoke.js` needs zero changes if Phase 1 wrote it against `localAddr()`.
    - Network note: the Latitude must reach the dgx-spark (same LAN/VPN as the Macs);
-     `--selftest test/fixtures/hello.wav` is the API-reachability preflight.
+     `--selftest testdata/sample.wav` is the API-reachability preflight.
 
 4. **CI-less cross-compile check** (on the Mac, cheap regression guard):
    `GOOS=windows GOARCH=amd64 go build ./...` added to `build:go` as a compile-only
@@ -52,4 +52,11 @@ day a Windows port begins.
       WAV → `result` with real transcript from the dgx-spark.
 - [ ] Two concurrent smoke clients → correct unicast routing (same as mac test).
 - [ ] Kill daemon while smoke client polls → client's ensure-loop respawns it.
-- [ ] On the Mac: `GOOS=windows` compile step green in `npm run build:go`.
+- [x] On the Mac: `GOOS=windows` compile step green in `npm run build:go`.
+
+## Status note (2026-07-18, execution session)
+
+Everything mac-side is DONE: go-winio pipe listener (build-tagged), dev/prod
+pipe names, cross-compile check wired into `build:go`, harness README written.
+The five on-Latitude checkboxes above stay open until Todd runs the harness on
+the Dell Latitude (Win 11) — `scripts/win/README.md` is the runbook.

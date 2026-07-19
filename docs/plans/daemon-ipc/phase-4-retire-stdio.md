@@ -34,8 +34,9 @@ apps have exactly one IPC path. Documentation matches reality.
 
 ## Exit criteria
 
-- [ ] `grep -rn "stdin\|readline\|DICTATE_IPC" go/ arcade/main.js main.js` → only
-      hits are `--selftest` internals and comments.
+- [x] `grep -rn "stdin\|readline\|DICTATE_IPC" go/ arcade/main.js main.js` → only
+      hits are `--selftest` internals and comments. (Verified 2026-07-18: one
+      historical comment in hub.go + the unrelated WezTerm key-forward pipe.)
 - [ ] Full regression on macOS via `npm run dev`: dictation from Arcade + Studio,
       mic picker + last-used row, restart row, kill/upgrade/sleep drills from
       Phase 2 all green.
@@ -47,3 +48,13 @@ apps have exactly one IPC path. Documentation matches reality.
 npm publish of the daemon architecture (separate decision, own release notes),
 streaming ASR (the daemon is now shaped for it), launchd KeepAlive for the
 launcher, full Windows app port.
+
+## STATUS: EXECUTED (code) — 2026-07-18
+
+The cut is done: Go is `--daemon`/`--selftest` only (stdin loop + stdout emitter
+deleted), both mains and the launcher have no spawn/readline/`DICTATE_IPC`
+plumbing, `kill:dev`/`kill:prod` also stop the matching daemon, docs/IPC.md §3 +
+README + package.json describe the socket transport. Daemon smoke re-ran green
+against the cut binary (real transcript). The three unchecked boxes above are
+Todd's verification gate — **no release until the new pattern is proven as good
+or better than 0.2.22.**

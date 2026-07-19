@@ -34,7 +34,10 @@ func newAPIClient(baseURL string) *apiClient {
 	// freezing.
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
+			// 5s connect budget: after sleep/wake the pooled conns to the API
+			// are dead — a fresh dial must fail fast so the retry (below) can
+			// land inside the user's patience window.
+			Timeout:   5 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		IdleConnTimeout:       30 * time.Second, // evict idle conns well before NAT drops them
@@ -102,14 +105,25 @@ func (c *apiClient) dictate(wav []byte, dictationOptions string, cleanup bool) (
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/dictate", &body)
-	if err != nil {
-		return "", "", "", nil, &stageError{"upload", err}
-	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-
-	resp, err := c.http.Do(req)
-	if err != nil {
+	// One retry on connection-level failure (refused/reset/dead pooled conn —
+	// the post-sleep/wake signature). Do() erroring means NO response bytes
+	// were received, so a resend cannot double-apply; a genuine deadline is
+	// excluded so a slow transcription is never retried on top of itself.
+	payload := body.Bytes()
+	var resp *http.Response
+	for attempt := 0; ; attempt++ {
+		req, rerr := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/dictate", bytes.NewReader(payload))
+		if rerr != nil {
+			return "", "", "", nil, &stageError{"upload", rerr}
+		}
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		resp, err = c.http.Do(req)
+		if err == nil {
+			break
+		}
+		if attempt == 0 && ctx.Err() == nil {
+			continue
+		}
 		return "", "", "", nil, &stageError{"network", fmt.Errorf("cannot reach API at %s: %w", c.baseURL, err)}
 	}
 	defer resp.Body.Close()
@@ -134,19 +148,25 @@ func (c *apiClient) dictate(wav []byte, dictationOptions string, cleanup bool) (
 }
 
 // healthy reports whether GET /health returns 200 (both NIMs ready).
+// Retries once on connection error so a single dead pooled conn (sleep/wake)
+// doesn't flicker availability off across every client.
 func (c *apiClient) healthy() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
-	if err != nil {
-		return false
+	for attempt := 0; attempt < 2; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
+		if err != nil {
+			cancel()
+			return false
+		}
+		resp, err := c.http.Do(req)
+		cancel()
+		if err != nil {
+			continue
+		}
+		resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
 	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	return false
 }
 
 func snippet(b []byte) string {
