@@ -73,6 +73,23 @@ const GO_BIN = unpacked(path.join(__dirname, "go", "bin", "dictation-go"));
 // Dictation IPC (docs/plans/daemon-ipc/PLAN.md): one shared daemon over a local
 // socket serves every window — NDJSON protocol v1 via lib/dictation-client.js.
 const { connectDictation } = require("./lib/dictation-client");
+const { Auth } = require("./lib/auth");
+const { safeStorage } = require("electron");
+
+// Talkersoft ID auth. The identity service URL comes from the backend's
+// /capabilities (auth_issuer); when the backend requires no auth it stays empty
+// and the Account row simply says so. On every token change we push it to the
+// daemon (so dictation is authenticated) and to the renderer (the Account row).
+const auth = new Auth({
+  issuer: () => (lastCaps && lastCaps.auth_issuer) || "",
+  safeStorage,
+  openExternal: (u) => { try { shell.openExternal(u); } catch {} },
+  log: (m) => logLine("info", `auth: ${m}`),
+});
+auth.on("change", (status) => {
+  if (dc) dc.setToken(auth.token());
+  toRenderer("auth:changed", status);
+});
 
 // WezTerm "last leg": deliver cleaned text into a WezTerm/Claude pane via the
 // bundled Go bridge binary (which itself shells out to `wezterm cli`).
@@ -638,7 +655,7 @@ function saveAgents(agents) {
 let dc = null;
 function ensureDaemonClient() {
   if (dc) return dc;
-  dc = connectDictation({ client: "studio", appVersion: app.getVersion(), bin: GO_BIN, apiUrl: loadApiUrl });
+  dc = connectDictation({ client: "studio", appVersion: app.getVersion(), bin: GO_BIN, apiUrl: loadApiUrl, token: () => auth.token() });
   dc.on("message", handleGo);
   dc.on("up", () => logLine("info", "dictation daemon connected"));
   dc.on("down", () => logLine("err", "dictation daemon unavailable — reconnecting"));
@@ -844,6 +861,24 @@ ipcMain.handle("mic:volume:set", (_e, n) => new Promise((res) => {
   const v = Math.max(0, Math.min(100, parseInt(n, 10) || 0));
   execFile("osascript", ["-e", `set volume input volume ${v}`], (e) => res({ ok: !e, volume: v }));
 }));
+
+// ── Talkersoft ID account (Preferences ▸ Account row) ────────────────────────────
+// Sign in via the system browser (loopback catcher); the access token flows to
+// the daemon and dictation is authenticated. required_by tells the renderer
+// whether the backend actually enforces auth (so the row can nudge when needed).
+ipcMain.handle("auth:status", () => ({
+  ...auth.status(),
+  issuer: (lastCaps && lastCaps.auth_issuer) || "",
+  required_by: (lastCaps && lastCaps.auth) || "off",
+}));
+ipcMain.handle("auth:login", async () => {
+  try { return { ok: true, status: await auth.login() }; }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.handle("auth:logout", async () => {
+  try { await auth.logout(); return { ok: true }; }
+  catch (e) { return { ok: false, error: e.message }; }
+});
 
 // ── dictation daemon (Preferences ▸ "Dictation daemon" action row) ───────────────
 // info() feeds the chip (version · uptime · clients); restart sends shutdown and
@@ -1686,7 +1721,10 @@ app.whenReady().then(() => {
   // ONE capability probe at startup (or one speculative localhost probe when api_url
   // is blank). It derives dictationAvailable, pushes it to both renderers, and only
   // then spawns the Go bridge — gated on availability so a missing backend is silent.
-  startupProbe().finally(() => spawnGo());
+  // Probe the backend first (populates lastCaps.auth_issuer), then try to restore
+  // a saved session, then bring up the daemon (which the restored token rides via
+  // the auth "change" → dc.setToken path).
+  startupProbe().finally(() => { auth.restore().finally(() => spawnGo()); });
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 // A second launch routes here (single-instance) instead of starting a rival

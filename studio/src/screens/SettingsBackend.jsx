@@ -13,6 +13,56 @@ function capsSummary(caps) {
 // connected clients), not a guess. Restart sends shutdown("user_restart"); the
 // launcher/client ensure loops revive it, and the uptime resetting to seconds
 // is the visible proof the restart took effect (mic-row philosophy).
+// Account row — sign in to Talkersoft ID (Google). Shows verifiable state (the
+// email comes from the verified token, not a guess). Only nudges when the active
+// backend actually requires auth; otherwise it's an available-but-optional row.
+function AccountSection() {
+  const [st, setSt] = useState({ signedIn: false, email: "", lic: "", issuer: "", required_by: "off" });
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const refresh = async () => { try { const s = await tester.authStatus(); if (s) setSt((p) => ({ ...p, ...s })); } catch {} };
+  useEffect(() => {
+    refresh();
+    if (tester.onAuthChanged) tester.onAuthChanged((s) => setSt((p) => ({ ...p, ...s })));
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, []);
+  const login = async () => {
+    setBusy(true); setMsg("Opening your browser…");
+    try {
+      const r = await tester.authLogin();
+      setMsg(r && r.ok ? "" : `Sign-in failed: ${(r && r.error) || "unknown"}`);
+    } catch (e) { setMsg("Sign-in failed: " + e.message); }
+    setBusy(false); refresh();
+  };
+  const logout = async () => { setBusy(true); try { await tester.authLogout(); } catch {} setBusy(false); refresh(); };
+
+  const noIssuer = !st.issuer;
+  return (
+    <div className="disp-actions" style={{ marginTop: 0, borderTop: "none", paddingTop: 0 }}>
+      <div className="disp-act-row">
+        <div className="disp-act-icon">👤</div>
+        <div className="disp-act-main">
+          <div className="disp-act-name">Account</div>
+          <div className="disp-act-sub">
+            {st.signedIn
+              ? <>Signed in as <b>{st.email}</b>{st.lic ? <> · license <b>{st.lic}</b></> : null}</>
+              : noIssuer
+                ? "The active backend doesn't require sign-in."
+                : (st.required_by === "required" ? "Sign in to use dictation on this backend." : "Optional — sign in to associate dictation with your account.")}
+            {msg ? <><br /><span style={{ color: "#e53e3e" }}>{msg}</span></> : null}
+          </div>
+        </div>
+        <div className="disp-act-trail">
+          {st.signedIn
+            ? <button onClick={logout} disabled={busy}>{busy ? "…" : "Sign out"}</button>
+            : <button onClick={login} disabled={busy || noIssuer}>{busy ? "…" : "Sign in with Google"}</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DaemonSection() {
   const [info, setInfo] = useState(null); // {daemon_version, uptime_s, clients}
   const [err, setErr] = useState("");
@@ -296,6 +346,9 @@ export function SettingsBackend() {
   return (
     <div className="panel active" style={{ overflow: "auto" }}>
       <div className="hint sgroup-intro">The dictation backends that transcribe your voice. Save several servers and pick exactly one as <b>active</b>. Dictation appears everywhere only when the active backend reports its speech engine is <b>ready</b>. Saved to <code>~/.hv/agent-arcade.yaml</code> (<code>servers</code> / <code>active_server</code>).</div>
+
+      <AccountSection />
+      <hr className="sep" />
 
       <div id="servers-list" style={{ marginTop: 8 }}>
         {!servers.length

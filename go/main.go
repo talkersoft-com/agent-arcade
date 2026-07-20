@@ -49,6 +49,7 @@ type inMsg struct {
 	AppVersion string `json:"app_version"`
 	Protocol   int    `json:"protocol"`
 	Reason     string `json:"reason"`
+	Token      string `json:"token"` // Talkersoft ID access token (hello or a "token" message)
 }
 
 type outMsg struct {

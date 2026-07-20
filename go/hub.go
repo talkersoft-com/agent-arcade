@@ -11,6 +11,14 @@ import (
 	"time"
 )
 
+// tokenState describes a token for logging without ever printing it.
+func tokenState(t string) string {
+	if t == "" {
+		return "cleared"
+	}
+	return "set"
+}
+
 // version is stamped at build time: -ldflags "-X main.version=x.y.z" (from
 // package.json via the build:go script). Observability only — staleness is
 // detected by self-stat, never by comparing versions.
@@ -133,6 +141,12 @@ func (d *daemon) serve(conn net.Conn) {
 	}
 	c.name = hello.Client
 	c.appVer = hello.AppVersion
+	// A client may carry the Talkersoft ID access token in hello; apply it so the
+	// very first dictation is authenticated. Empty tokens never clear a good one
+	// (a launcher/cli connecting without auth mustn't wipe Studio's token).
+	if hello.Token != "" {
+		d.api.setToken(hello.Token)
+	}
 
 	// Staleness check before welcome (locked decision #1): a replaced binary
 	// answers `stale` and steps down; the client's respawn-by-path lands on the
@@ -170,6 +184,11 @@ func (d *daemon) serve(conn net.Conn) {
 			d.startJob(c, msg)
 		case "info":
 			c.emit(d.infoResult())
+		case "token":
+			// Live token update (login, refresh, or logout→empty). Shared across
+			// all clients — whoever holds the identity sets it for every window.
+			d.api.setToken(msg.Token)
+			fmt.Fprintf(os.Stderr, "dictation-go: access token %s (from %s)\n", tokenState(msg.Token), c.name)
 		case "shutdown":
 			reason := msg.Reason
 			if reason == "" {
