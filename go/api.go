@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,6 +24,29 @@ import (
 type apiClient struct {
 	baseURL string
 	http    *http.Client
+
+	// Talkersoft ID access token (the wristband). Set by the client apps over
+	// the socket (hello/token); attached as a Bearer header to work requests so
+	// speech-api can verify. Guarded — updated live as tokens refresh.
+	mu    sync.RWMutex
+	token string
+}
+
+// setToken updates the current access token (empty string clears it).
+func (c *apiClient) setToken(t string) {
+	c.mu.Lock()
+	c.token = t
+	c.mu.Unlock()
+}
+
+// authHeader applies the current Bearer token to a request, if any.
+func (c *apiClient) authHeader(req *http.Request) {
+	c.mu.RLock()
+	t := c.token
+	c.mu.RUnlock()
+	if t != "" {
+		req.Header.Set("Authorization", "Bearer "+t)
+	}
 }
 
 func newAPIClient(baseURL string) *apiClient {
@@ -117,6 +141,7 @@ func (c *apiClient) dictate(wav []byte, dictationOptions string, cleanup bool) (
 			return "", "", "", nil, &stageError{"upload", rerr}
 		}
 		req.Header.Set("Content-Type", mw.FormDataContentType())
+		c.authHeader(req)
 		resp, err = c.http.Do(req)
 		if err == nil {
 			break
