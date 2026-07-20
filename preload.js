@@ -12,6 +12,11 @@ contextBridge.exposeInMainWorld("tester", {
   // dictation daemon (Preferences restart row): shared-daemon status + restart
   daemonInfo: () => ipcRenderer.invoke("daemon:info"),
   daemonRestart: () => ipcRenderer.invoke("daemon:restart"),
+  // Talkersoft ID account (Preferences ▸ Account row)
+  authStatus: () => ipcRenderer.invoke("auth:status"),
+  authLogin: () => ipcRenderer.invoke("auth:login"),
+  authLogout: () => ipcRenderer.invoke("auth:logout"),
+  onAuthChanged: (cb) => ipcRenderer.on("auth:changed", (_e, s) => cb(s)),
   micVolSet: (n) => ipcRenderer.invoke("mic:volume:set", n),
   // global hotkeys (Settings → Shortcuts)
   trayIcon: () => ipcRenderer.invoke("ui:trayIcon"),
