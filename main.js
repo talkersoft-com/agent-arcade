@@ -657,7 +657,13 @@ function ensureDaemonClient() {
   if (dc) return dc;
   dc = connectDictation({ client: "studio", appVersion: app.getVersion(), bin: GO_BIN, apiUrl: loadApiUrl, token: () => auth.token() });
   dc.on("message", handleGo);
-  dc.on("up", () => logLine("info", "dictation daemon connected"));
+  dc.on("up", () => {
+    logLine("info", "dictation daemon connected");
+    // Make sure the daemon always gets a current token on (re)connect — covers
+    // app-reopen and daemon-restart gaps so a stale wristband never reaches the
+    // backend. ensureFresh is a no-op when the token is still good.
+    auth.ensureFresh().then((ok) => { if (ok) dc.setToken(auth.token()); });
+  });
   dc.on("down", () => logLine("err", "dictation daemon unavailable — reconnecting"));
   dc.on("log", (m) => logLine("info", `daemon-client: ${m}`));
   return dc;
@@ -685,7 +691,16 @@ function cleanupTmp(p) { if (p) fs.unlink(p, () => {}); }
 function handleGo(m) {
   const j = pending[m.job_id]; if (!j) return;
   if (m.type === "result") { delete pending[m.job_id]; cleanupTmp(j.tmp); routeToAgent(j.agentId, m.cleaned_text); }
-  else if (m.type === "error") { delete pending[m.job_id]; cleanupTmp(j.tmp); toRenderer("dictation:event", { type: "error", agentId: j.agentId, error: m.error }); }
+  else if (m.type === "error") {
+    delete pending[m.job_id]; cleanupTmp(j.tmp);
+    // An auth failure (required mode, stale/expired token) self-heals: force a
+    // refresh and re-push the token so the NEXT dictation succeeds. The user just
+    // retries once — no re-login unless the 90-day refresh token is truly dead.
+    if (m.stage === "auth") {
+      auth.refresh().then(() => { if (dc) dc.setToken(auth.token()); }).catch(() => {});
+    }
+    toRenderer("dictation:event", { type: "error", agentId: j.agentId, error: m.error });
+  }
 }
 
 // cleaned text → the agent's WezTerm pane (honoring its esc settings), then keep
