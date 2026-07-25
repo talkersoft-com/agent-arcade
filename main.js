@@ -74,6 +74,7 @@ const GO_BIN = unpacked(path.join(__dirname, "go", "bin", "dictation-go"));
 // socket serves every window — NDJSON protocol v1 via lib/dictation-client.js.
 const { connectDictation } = require("./lib/dictation-client");
 const { Auth } = require("./lib/auth");
+const { registerHost } = require("./lib/registry");
 const { safeStorage } = require("electron");
 
 // Talkersoft ID auth. The identity service URL comes from the backend's
@@ -89,6 +90,17 @@ const auth = new Auth({
 auth.on("change", (status) => {
   if (dc) dc.setToken(auth.token());
   toRenderer("auth:changed", status);
+  // On sign-in (and on each silent refresh — a natural heartbeat), join this
+  // machine to the managed backend so the account knows which hosts are active.
+  // Fire-and-forget: a registry hiccup must never block dictation.
+  if (status.signedIn) {
+    registerHost({
+      token: auth.token(),
+      deviceId: auth.deviceId,
+      appVersion: app.getVersion(),
+      log: (m) => logLine("info", `registry: ${m}`),
+    });
+  }
 });
 
 // WezTerm "last leg": deliver cleaned text into a WezTerm/Claude pane via the
@@ -657,7 +669,13 @@ function ensureDaemonClient() {
   if (dc) return dc;
   dc = connectDictation({ client: "studio", appVersion: app.getVersion(), bin: GO_BIN, apiUrl: loadApiUrl, token: () => auth.token() });
   dc.on("message", handleGo);
-  dc.on("up", () => logLine("info", "dictation daemon connected"));
+  dc.on("up", () => {
+    logLine("info", "dictation daemon connected");
+    // Make sure the daemon always gets a current token on (re)connect — covers
+    // app-reopen and daemon-restart gaps so a stale wristband never reaches the
+    // backend. ensureFresh is a no-op when the token is still good.
+    auth.ensureFresh().then((ok) => { if (ok) dc.setToken(auth.token()); });
+  });
   dc.on("down", () => logLine("err", "dictation daemon unavailable — reconnecting"));
   dc.on("log", (m) => logLine("info", `daemon-client: ${m}`));
   return dc;
@@ -685,7 +703,16 @@ function cleanupTmp(p) { if (p) fs.unlink(p, () => {}); }
 function handleGo(m) {
   const j = pending[m.job_id]; if (!j) return;
   if (m.type === "result") { delete pending[m.job_id]; cleanupTmp(j.tmp); routeToAgent(j.agentId, m.cleaned_text); }
-  else if (m.type === "error") { delete pending[m.job_id]; cleanupTmp(j.tmp); toRenderer("dictation:event", { type: "error", agentId: j.agentId, error: m.error }); }
+  else if (m.type === "error") {
+    delete pending[m.job_id]; cleanupTmp(j.tmp);
+    // An auth failure (required mode, stale/expired token) self-heals: force a
+    // refresh and re-push the token so the NEXT dictation succeeds. The user just
+    // retries once — no re-login unless the 90-day refresh token is truly dead.
+    if (m.stage === "auth") {
+      auth.refresh().then(() => { if (dc) dc.setToken(auth.token()); }).catch(() => {});
+    }
+    toRenderer("dictation:event", { type: "error", agentId: j.agentId, error: m.error });
+  }
 }
 
 // cleaned text → the agent's WezTerm pane (honoring its esc settings), then keep
