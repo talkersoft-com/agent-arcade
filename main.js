@@ -91,6 +91,7 @@ const auth = new Auth({
 // Managed-config mode: false = local YAML (anonymous, the free path); true = the
 // backend drives agents (joined). Set by the sign-in sync below.
 let apiMode = false;
+let signedIn = false; // when true, loadApiUrl compiles the speech backend (no picker)
 let wasSignedIn = false;
 let pushTimer = null;
 
@@ -108,12 +109,19 @@ auth.on("change", (status) => {
   if (dc) dc.setToken(auth.token());
   toRenderer("auth:changed", status);
 
+  // Sign-in/out flips the compiled-backend switch; re-probe so dictation follows
+  // (joined → voice-dev; signed out → the local server picker).
+  const transition = signedIn !== status.signedIn;
+  signedIn = status.signedIn;
+
   if (!status.signedIn) {
     apiMode = false;
     wasSignedIn = false;
     toRenderer("config:changed", { mode: "local" });
+    if (transition) startupProbe().catch(() => {});
     return;
   }
+  if (transition) startupProbe().catch(() => {});
 
   // Register this host on every signed-in change (login + each silent refresh —
   // a natural heartbeat). Fire-and-forget; a registry hiccup never blocks dictation.
@@ -298,6 +306,9 @@ function reconcileMux() {
 //   2. else legacy doc.api_url set → [{name:"Default", url:api_url}] (migration);
 //   3. else → [{name:"Local", url:LOCALHOST_DEFAULT}] (fresh-install default).
 const LOCALHOST_DEFAULT = "http://localhost:9100";
+// When signed in, the speech backend DNS is COMPILED IN — the user picks no
+// server (that's a logged-out-only choice). Overridable via env for testing.
+const COMPILED_SPEECH_URL = (process.env.SPEECH_API_URL || "http://voice-dev.talkersoft.com:9100").trim();
 function normalizeServer(s) {
   return { name: String((s && s.name) || "").trim(), url: String((s && s.url) || "").trim() };
 }
@@ -335,7 +346,10 @@ function writeServers(servers, active) {
 // The base url to use for dictation/model/probe operations. The active server's url,
 // unless DICTATION_API_URL overrides it (dev last-resort, highest priority).
 function loadApiUrl() {
-  return (process.env.DICTATION_API_URL || "").trim() || (activeServer() || {}).url || "";
+  if (process.env.DICTATION_API_URL) return process.env.DICTATION_API_URL.trim();
+  // Joined → compiled speech DNS (no picker). Logged out → the user's chosen server.
+  if (signedIn) return COMPILED_SPEECH_URL;
+  return (activeServer() || {}).url || "";
 }
 const nameKey = (s) => String(s || "").trim().toLowerCase();
 // Server CRUD helpers (each persists via writeServers). Validation: non-empty trimmed

@@ -64,6 +64,10 @@ function openPreferences() { spawnBundle(["--preferences"]); } // → Studio, op
 const HV_DIR = path.join(os.homedir(), ".hv");
 const SETTINGS_PATH = path.join(HV_DIR, DEV ? "agent-arcade.dev.yaml" : "agent-arcade.yaml");
 const SUSPEND_PATH = path.join(HV_DIR, DEV ? ".summon-suspend.dev" : ".summon-suspend");
+// Joined = a stored Talkersoft ID session exists (same file the auth layer writes).
+// When joined, agents are managed online — hide the local Studio + Preferences.
+const REFRESH_FILE = path.join(HV_DIR, DEV ? "id-refresh.dev.dat" : "id-refresh.dat");
+function joined() { try { return fs.existsSync(REFRESH_FILE); } catch { return false; } }
 function readSummonAccel() {
   try {
     const doc = yaml.load(fs.readFileSync(SETTINGS_PATH, "utf8")) || {};
@@ -211,10 +215,15 @@ function buildMenu() {
     { label: `${APP_LABEL} v${app.getVersion()}`, enabled: false },
     { type: "separator" },
     { label: "Launch Agent Arcade", click: launchArcade },
-    { label: "Open Agent Arcade Studio", click: openStudio },
-    { label: "Preferences…", click: openPreferences },
-    { type: "separator" },
   ];
+  // Joined users manage agents online — hide the local Studio + Preferences.
+  if (!joined()) {
+    items.push(
+      { label: "Open Agent Arcade Studio", click: openStudio },
+      { label: "Preferences…", click: openPreferences },
+    );
+  }
+  items.push({ type: "separator" });
   items.push(
     { label: `About ${APP_LABEL}…`, click: showAbout },
     { type: "separator" },
@@ -231,6 +240,9 @@ function createTray() {
   tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img);
   tray.setToolTip(APP_LABEL);
   tray.setContextMenu(buildMenu());
+  // Rebuild the menu when sign-in state changes (the refresh-token file appears or
+  // disappears) so Studio/Preferences hide/show live without a relaunch.
+  try { fs.watch(HV_DIR, { persistent: false }, () => refreshMenu()); } catch {}
 }
 
 app.whenReady().then(() => {
