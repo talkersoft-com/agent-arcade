@@ -75,6 +75,7 @@ const GO_BIN = unpacked(path.join(__dirname, "go", "bin", "dictation-go"));
 const { connectDictation } = require("./lib/dictation-client");
 const { Auth } = require("./lib/auth");
 const { registerHost } = require("./lib/registry");
+const { syncOnLogin, pushConfig } = require("./lib/config-sync");
 const { safeStorage } = require("electron");
 
 // Talkersoft ID auth. The identity service URL comes from the backend's
@@ -87,19 +88,54 @@ const auth = new Auth({
   openExternal: (u) => { try { shell.openExternal(u); } catch {} },
   log: (m) => logLine("info", `auth: ${m}`),
 });
+// Managed-config mode: false = local YAML (anonymous, the free path); true = the
+// backend drives agents (joined). Set by the sign-in sync below.
+let apiMode = false;
+let wasSignedIn = false;
+let pushTimer = null;
+
+// schedulePush mirrors a local edit up to the API (debounced) — only in API mode.
+function schedulePush() {
+  if (!apiMode) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => {
+    pushConfig({ token: auth.token(), readDoc, log: (m) => logLine("info", `config-sync: ${m}`) }).catch(() => {});
+  }, 1500);
+  if (pushTimer.unref) pushTimer.unref();
+}
+
 auth.on("change", (status) => {
   if (dc) dc.setToken(auth.token());
   toRenderer("auth:changed", status);
-  // On sign-in (and on each silent refresh — a natural heartbeat), join this
-  // machine to the managed backend so the account knows which hosts are active.
-  // Fire-and-forget: a registry hiccup must never block dictation.
-  if (status.signedIn) {
-    registerHost({
-      token: auth.token(),
-      deviceId: auth.deviceId,
-      appVersion: app.getVersion(),
-      log: (m) => logLine("info", `registry: ${m}`),
-    });
+
+  if (!status.signedIn) {
+    apiMode = false;
+    wasSignedIn = false;
+    toRenderer("config:changed", { mode: "local" });
+    return;
+  }
+
+  // Register this host on every signed-in change (login + each silent refresh —
+  // a natural heartbeat). Fire-and-forget; a registry hiccup never blocks dictation.
+  registerHost({
+    token: auth.token(),
+    deviceId: auth.deviceId,
+    appVersion: app.getVersion(),
+    log: (m) => logLine("info", `registry: ${m}`),
+  });
+
+  // Sync managed config ONCE per sign-in (not on every token refresh, which would
+  // clobber local runtime state). First join migrates the YAML; then the API drives.
+  if (!wasSignedIn) {
+    wasSignedIn = true;
+    syncOnLogin({
+      token: auth.token(), readDoc, writeDoc, avatarsDir: avatarsDir(),
+      log: (m) => logLine("info", `config-sync: ${m}`),
+    }).then((res) => {
+      apiMode = res.mode === "api";
+      toRenderer("config:changed", { mode: res.mode });
+      toRenderer("agents:changed"); // renderers re-fetch agents:list
+    }).catch((e) => logLine("err", `config-sync: ${e.message}`));
   }
 });
 
@@ -461,6 +497,7 @@ function saveGroups(groups) {
   const doc = readDoc();
   doc.groups = (groups || []).map(normalizeGroup);
   writeDoc(doc);
+  schedulePush(); // mirror to the API when joined (no-op locally)
   return loadGroups();
 }
 
@@ -483,6 +520,7 @@ function saveSystems(systems) {
   const doc = readDoc();
   doc.systems = (systems || []).map(normalizeSystem);
   writeDoc(doc);
+  schedulePush(); // mirror to the API when joined (no-op locally)
   return loadSystems();
 }
 // ── agent programs (the catalog of selectable agent harnesses) ────────────────
@@ -659,6 +697,7 @@ function saveAgents(agents) {
   const doc = readDoc();
   doc.agents = (agents || []).map(normalizeAgent);
   writeDoc(doc);
+  schedulePush(); // mirror to the API when joined (no-op locally)
   return loadAgents();
 }
 // ── Go bridge ─────────────────────────────────────────────────────────────────
