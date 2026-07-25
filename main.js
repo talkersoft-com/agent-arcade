@@ -74,6 +74,7 @@ const GO_BIN = unpacked(path.join(__dirname, "go", "bin", "dictation-go"));
 // socket serves every window — NDJSON protocol v1 via lib/dictation-client.js.
 const { connectDictation } = require("./lib/dictation-client");
 const { Auth } = require("./lib/auth");
+const { registerHost } = require("./lib/registry");
 const { safeStorage } = require("electron");
 
 // Talkersoft ID auth. The identity service URL comes from the backend's
@@ -89,6 +90,17 @@ const auth = new Auth({
 auth.on("change", (status) => {
   if (dc) dc.setToken(auth.token());
   toRenderer("auth:changed", status);
+  // On sign-in (and on each silent refresh — a natural heartbeat), join this
+  // machine to the managed backend so the account knows which hosts are active.
+  // Fire-and-forget: a registry hiccup must never block dictation.
+  if (status.signedIn) {
+    registerHost({
+      token: auth.token(),
+      deviceId: auth.deviceId,
+      appVersion: app.getVersion(),
+      log: (m) => logLine("info", `registry: ${m}`),
+    });
+  }
 });
 
 // WezTerm "last leg": deliver cleaned text into a WezTerm/Claude pane via the
