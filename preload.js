@@ -21,6 +21,9 @@ contextBridge.exposeInMainWorld("tester", {
   onboardingDone: (choice) => ipcRenderer.invoke("onboarding:done", choice),
   // License view: tier + what it unlocks (+ device count when paid).
   licenseGet: () => ipcRenderer.invoke("license:get"),
+  // Device identity: the friendly name this machine is known by.
+  deviceNameSuggest: () => ipcRenderer.invoke("deviceName:suggest"),
+  deviceNameSave: (name) => ipcRenderer.invoke("deviceName:save", name),
   micVolSet: (n) => ipcRenderer.invoke("mic:volume:set", n),
   // global hotkeys (Settings → Shortcuts)
   trayIcon: () => ipcRenderer.invoke("ui:trayIcon"),
