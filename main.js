@@ -105,6 +105,25 @@ function schedulePush() {
   if (pushTimer.unref) pushTimer.unref();
 }
 
+// License badge state — a tiny file the launcher reads to show "License: Free ·
+// local" / "License: Hobbyist · connected" in the tray, so which license is in
+// use is always visible. main writes it on every auth change; the launcher
+// fs.watches ~/.hv and rebuilds its menu. Also broadcast to renderers.
+const LICENSE_STATE_PATH = path.join(os.homedir(), ".hv", DEV ? "agent-arcade-license.dev.json" : "agent-arcade-license.json");
+function licenseLabel(lic) {
+  const k = (lic || "free").toString().toLowerCase();
+  if (!k || k === "free") return "Free";
+  return k.charAt(0).toUpperCase() + k.slice(1); // hobbyist → Hobbyist
+}
+function setLicenseState({ signedIn: si, lic, mode }) {
+  const state = { signedIn: !!si, lic: lic || "free", mode: mode || "local", label: licenseLabel(lic), updated: Date.now() };
+  try {
+    fs.mkdirSync(path.dirname(LICENSE_STATE_PATH), { recursive: true });
+    fs.writeFileSync(LICENSE_STATE_PATH, JSON.stringify(state));
+  } catch (e) { logLine("err", `license-state: ${e.message}`); }
+  toRenderer("license:changed", state);
+}
+
 auth.on("change", (status) => {
   if (dc) dc.setToken(auth.token());
   toRenderer("auth:changed", status);
@@ -117,14 +136,28 @@ auth.on("change", (status) => {
   if (!status.signedIn) {
     apiMode = false;
     wasSignedIn = false;
+    setLicenseState({ signedIn: false, lic: "free", mode: "local" });
     toRenderer("config:changed", { mode: "local" });
     if (transition) startupProbe().catch(() => {});
     return;
   }
   if (transition) startupProbe().catch(() => {});
 
-  // Register this host on every signed-in change — free AND licensed — so the
-  // account knows which hosts joined. Fire-and-forget; never blocks dictation.
+  // API mode — and ALL product-API traffic — is gated on a QUALIFYING (paid)
+  // license, NOT merely being signed in. A Free user is known only by identity in
+  // Talkersoft ID; the product API tracks NOTHING for them — no device
+  // registration, no managed config sync. They stay fully local (YAML + local
+  // speech). This is why device registration lives below this gate, not above it.
+  const licensed = !!status.lic && status.lic !== "free";
+  if (!licensed) {
+    apiMode = false;
+    setLicenseState({ signedIn: true, lic: status.lic || "free", mode: "local" });
+    toRenderer("config:changed", { mode: "local", lic: status.lic || "free" });
+    return;
+  }
+
+  // Licensed (paid) only: register this device with the product API (upsert; keeps
+  // last_seen fresh) — fire-and-forget, never blocks dictation.
   registerHost({
     token: auth.token(),
     deviceId: auth.deviceId,
@@ -132,28 +165,22 @@ auth.on("change", (status) => {
     log: (m) => logLine("info", `registry: ${m}`),
   });
 
-  // API mode is gated on a QUALIFYING license — NOT merely being signed in. A Free
-  // user (no active license) is known by identity but stays fully local: agents in
-  // YAML, no managed sync. Only a qualifying tier flips the app into API mode.
-  const licensed = !!status.lic && status.lic !== "free";
-  if (!licensed) {
-    apiMode = false;
-    toRenderer("config:changed", { mode: "local", lic: status.lic || "free" });
-    return;
-  }
-
-  // Licensed: sync managed config ONCE per sign-in (not on every token refresh,
-  // which would clobber local runtime state). First join migrates the YAML.
+  // Sync managed config ONCE per sign-in (not on every token refresh, which would
+  // clobber local runtime state). First join migrates the YAML.
   if (!wasSignedIn) {
     wasSignedIn = true;
+    setLicenseState({ signedIn: true, lic: status.lic, mode: "connecting" });
     syncOnLogin({
       token: auth.token(), readDoc, writeDoc, avatarsDir: avatarsDir(),
       log: (m) => logLine("info", `config-sync: ${m}`),
     }).then((res) => {
       apiMode = res.mode === "api";
+      setLicenseState({ signedIn: true, lic: status.lic, mode: res.mode });
       toRenderer("config:changed", { mode: res.mode, lic: status.lic });
       toRenderer("agents:changed"); // renderers re-fetch agents:list
     }).catch((e) => logLine("err", `config-sync: ${e.message}`));
+  } else {
+    setLicenseState({ signedIn: true, lic: status.lic, mode: apiMode ? "api" : "local" });
   }
 });
 
