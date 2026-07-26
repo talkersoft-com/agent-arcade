@@ -1635,13 +1635,25 @@ ipcMain.handle("agents:generateAvatar", async (_e, id) => {
   if (!apiUrl) return { ok: false, error: "Dictation API not configured (api_url)." };
   patchAgent(id, { avatar_status: "pending" });
   try {
+    // The backend gates /generate-avatar on a wristband (and a qualifying
+    // license). We already hold a token when signed in — send it, or the call
+    // comes back 401 and avatars silently stop working.
+    const token = auth.token();
     const resp = await fetch(apiUrl + "/generate-avatar", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...(token ? { Authorization: "Bearer " + token } : {}),
+      },
       body: JSON.stringify({ agent_id: agent.id, name: agent.name, description: desc, accent_color: agent.color || "#4363d8" }),
       signal: AbortSignal.timeout(45000),
     });
-    if (!resp.ok) throw new Error(`API ${resp.status}: ${(await resp.text()).slice(0, 120)}`);
+    if (!resp.ok) {
+      const detail = (await resp.text()).slice(0, 200);
+      if (resp.status === 401) throw new Error("Sign in to generate avatars.");
+      if (resp.status === 403) throw new Error("Your plan doesn't include avatar generation.");
+      throw new Error(`API ${resp.status}: ${detail}`);
+    }
     const buf = Buffer.from(await resp.arrayBuffer());
     if (!buf.length) throw new Error("empty image");
     const file = path.join(avatarsDir(), `${agent.id}.png`);
