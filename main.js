@@ -125,6 +125,59 @@ function setLicenseState({ signedIn: si, lic, mode }) {
   toRenderer("license:changed", state);
 }
 
+// ── device identity ────────────────────────────────────────────────────────────
+// A device is a friendly name + an icon (the icon comes from the platform). The
+// name is what a person picks this machine by — today in the web console, later
+// in a Devices menu when driving one machine from another. Asked ONCE, the first
+// time a licensed user registers this machine; stored in the YAML alongside
+// everything else, and sent as the registry label.
+let deviceNameWin = null;
+function deviceName() { try { return (readDoc().device_name || "").toString().trim(); } catch { return ""; } }
+function setDeviceName(name) {
+  const d = readDoc();
+  d.device_name = (name || "").toString().trim().slice(0, 60);
+  writeDoc(d);
+}
+function platformKey() {
+  return process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux";
+}
+ipcMain.handle("deviceName:suggest", () => ({
+  suggested: deviceName() || (() => { try { return os.hostname().replace(/\.local$/i, ""); } catch { return ""; } })(),
+  platform: platformKey(),
+}));
+ipcMain.handle("deviceName:save", (_e, name) => {
+  setDeviceName(name);
+  logLine("info", `device named "${deviceName()}"`);
+  if (deviceNameWin && !deviceNameWin.isDestroyed()) deviceNameWin.close();
+  deviceNameWin = null;
+  // Register (or re-label) now that we have the name the person chose.
+  registerHost({
+    token: auth.token(), deviceId: auth.deviceId, appVersion: app.getVersion(),
+    label: deviceName(), log: (m) => logLine("info", `registry: ${m}`),
+  });
+  return { ok: true };
+});
+function askDeviceName() {
+  if (deviceNameWin && !deviceNameWin.isDestroyed()) { deviceNameWin.show(); deviceNameWin.focus(); return; }
+  deviceNameWin = new BrowserWindow({
+    width: 440, height: 430, resizable: false, fullscreenable: false, minimizable: false,
+    title: "Name this device", titleBarStyle: "hiddenInset",
+    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false },
+  });
+  deviceNameWin.loadFile(path.join(__dirname, "renderer", "device-name.html"));
+  deviceNameWin.center();
+  // Closed without saving → fall back to the hostname so the device still registers.
+  deviceNameWin.on("closed", () => {
+    deviceNameWin = null;
+    if (!deviceName()) {
+      registerHost({
+        token: auth.token(), deviceId: auth.deviceId, appVersion: app.getVersion(),
+        log: (m) => logLine("info", `registry: ${m}`),
+      });
+    }
+  });
+}
+
 // license:get — the app's license view. Paid reads its own authoritative record;
 // Free reads only the public, identity-free catalog (so an unpaid user is still
 // never tracked by the product API). Always answers, even offline.
@@ -175,14 +228,20 @@ auth.on("change", (status) => {
     return;
   }
 
-  // Licensed (paid) only: register this device with the product API (upsert; keeps
-  // last_seen fresh) — fire-and-forget, never blocks dictation.
-  registerHost({
-    token: auth.token(),
-    deviceId: auth.deviceId,
-    appVersion: app.getVersion(),
-    log: (m) => logLine("info", `registry: ${m}`),
-  });
+  // Licensed (paid) only: this machine joins the fleet. The FIRST time, ask what to
+  // call it — the name is how it'll be picked from a list later. After that just
+  // upsert (keeps last_seen fresh); fire-and-forget, never blocks dictation.
+  if (!deviceName()) {
+    askDeviceName(); // registers on save (or on close, using the hostname)
+  } else {
+    registerHost({
+      token: auth.token(),
+      deviceId: auth.deviceId,
+      appVersion: app.getVersion(),
+      label: deviceName(),
+      log: (m) => logLine("info", `registry: ${m}`),
+    });
+  }
 
   // Sync managed config ONCE per sign-in (not on every token refresh, which would
   // clobber local runtime state). First join migrates the YAML.
