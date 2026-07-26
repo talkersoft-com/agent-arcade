@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld("tester", {
   onAuthChanged: (cb) => ipcRenderer.on("auth:changed", (_e, s) => cb(s)),
   // First-run onboarding: record the choice (login/create/free) → main proceeds.
   onboardingDone: (choice) => ipcRenderer.invoke("onboarding:done", choice),
+  // License view: tier + what it unlocks (+ device count when paid).
+  licenseGet: () => ipcRenderer.invoke("license:get"),
   micVolSet: (n) => ipcRenderer.invoke("mic:volume:set", n),
   // global hotkeys (Settings → Shortcuts)
   trayIcon: () => ipcRenderer.invoke("ui:trayIcon"),
