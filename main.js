@@ -76,6 +76,7 @@ const { connectDictation } = require("./lib/dictation-client");
 const { Auth } = require("./lib/auth");
 const { registerHost } = require("./lib/registry");
 const { syncOnLogin, pushConfig } = require("./lib/config-sync");
+const { fetchLicense, fetchEntitlements } = require("./lib/license");
 const { safeStorage } = require("electron");
 
 // Talkersoft ID auth. The identity service URL comes from the backend's
@@ -105,6 +106,96 @@ function schedulePush() {
   if (pushTimer.unref) pushTimer.unref();
 }
 
+// License badge state — a tiny file the launcher reads to show "License: Free ·
+// local" / "License: Hobbyist · connected" in the tray, so which license is in
+// use is always visible. main writes it on every auth change; the launcher
+// fs.watches ~/.hv and rebuilds its menu. Also broadcast to renderers.
+const LICENSE_STATE_PATH = path.join(os.homedir(), ".hv", DEV ? "agent-arcade-license.dev.json" : "agent-arcade-license.json");
+function licenseLabel(lic) {
+  const k = (lic || "free").toString().toLowerCase();
+  if (!k || k === "free") return "Free";
+  return k.charAt(0).toUpperCase() + k.slice(1); // hobbyist → Hobbyist
+}
+function setLicenseState({ signedIn: si, lic, mode }) {
+  const state = { signedIn: !!si, lic: lic || "free", mode: mode || "local", label: licenseLabel(lic), updated: Date.now() };
+  try {
+    fs.mkdirSync(path.dirname(LICENSE_STATE_PATH), { recursive: true });
+    fs.writeFileSync(LICENSE_STATE_PATH, JSON.stringify(state));
+  } catch (e) { logLine("err", `license-state: ${e.message}`); }
+  toRenderer("license:changed", state);
+}
+
+// ── device identity ────────────────────────────────────────────────────────────
+// A device is a friendly name + an icon (the icon comes from the platform). The
+// name is what a person picks this machine by — today in the web console, later
+// in a Devices menu when driving one machine from another. Asked ONCE, the first
+// time a licensed user registers this machine; stored in the YAML alongside
+// everything else, and sent as the registry label.
+let deviceNameWin = null;
+function deviceName() { try { return (readDoc().device_name || "").toString().trim(); } catch { return ""; } }
+function setDeviceName(name) {
+  const d = readDoc();
+  d.device_name = (name || "").toString().trim().slice(0, 60);
+  writeDoc(d);
+}
+function platformKey() {
+  return process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux";
+}
+ipcMain.handle("deviceName:suggest", () => ({
+  suggested: deviceName() || (() => { try { return os.hostname().replace(/\.local$/i, ""); } catch { return ""; } })(),
+  platform: platformKey(),
+}));
+ipcMain.handle("deviceName:save", (_e, name) => {
+  setDeviceName(name);
+  logLine("info", `device named "${deviceName()}"`);
+  if (deviceNameWin && !deviceNameWin.isDestroyed()) deviceNameWin.close();
+  deviceNameWin = null;
+  // Register (or re-label) now that we have the name the person chose.
+  registerHost({
+    token: auth.token(), deviceId: auth.deviceId, appVersion: app.getVersion(),
+    label: deviceName(), log: (m) => logLine("info", `registry: ${m}`),
+  });
+  return { ok: true };
+});
+function askDeviceName() {
+  if (deviceNameWin && !deviceNameWin.isDestroyed()) { deviceNameWin.show(); deviceNameWin.focus(); return; }
+  deviceNameWin = new BrowserWindow({
+    width: 440, height: 430, resizable: false, fullscreenable: false, minimizable: false,
+    title: "Name this device", titleBarStyle: "hiddenInset",
+    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false },
+  });
+  deviceNameWin.loadFile(path.join(__dirname, "renderer", "device-name.html"));
+  deviceNameWin.center();
+  // Closed without saving → fall back to the hostname so the device still registers.
+  deviceNameWin.on("closed", () => {
+    deviceNameWin = null;
+    if (!deviceName()) {
+      registerHost({
+        token: auth.token(), deviceId: auth.deviceId, appVersion: app.getVersion(),
+        log: (m) => logLine("info", `registry: ${m}`),
+      });
+    }
+  });
+}
+
+// license:get — the app's license view. Paid reads its own authoritative record;
+// Free reads only the public, identity-free catalog (so an unpaid user is still
+// never tracked by the product API). Always answers, even offline.
+ipcMain.handle("license:get", async () => {
+  const st = auth.status ? auth.status() : { signedIn: signedIn, email: "", lic: "" };
+  const tier = (st.lic || "free").toString();
+  const paid = !!st.signedIn && tier !== "free";
+  const base = { signedIn: !!st.signedIn, tier, label: licenseLabel(tier), email: st.email || "", mode: apiMode ? "api" : "local", paid };
+  const log = (m) => logLine("info", `license: ${m}`);
+  if (paid) {
+    const lic = await fetchLicense({ token: auth.token(), log });
+    if (lic) return { ...base, entitlements: lic.entitlements || {}, deviceCount: lic.device_count, email: lic.email || base.email };
+    return { ...base, entitlements: null, deviceCount: null };
+  }
+  const all = await fetchEntitlements({ log });
+  return { ...base, entitlements: (all && all[tier]) || null, upgrade: (all && all.hobbyist) || null, deviceCount: null };
+});
+
 auth.on("change", (status) => {
   if (dc) dc.setToken(auth.token());
   toRenderer("auth:changed", status);
@@ -117,33 +208,57 @@ auth.on("change", (status) => {
   if (!status.signedIn) {
     apiMode = false;
     wasSignedIn = false;
+    setLicenseState({ signedIn: false, lic: "free", mode: "local" });
     toRenderer("config:changed", { mode: "local" });
     if (transition) startupProbe().catch(() => {});
     return;
   }
   if (transition) startupProbe().catch(() => {});
 
-  // Register this host on every signed-in change (login + each silent refresh —
-  // a natural heartbeat). Fire-and-forget; a registry hiccup never blocks dictation.
-  registerHost({
-    token: auth.token(),
-    deviceId: auth.deviceId,
-    appVersion: app.getVersion(),
-    log: (m) => logLine("info", `registry: ${m}`),
-  });
+  // API mode — and ALL product-API traffic — is gated on a QUALIFYING (paid)
+  // license, NOT merely being signed in. A Free user is known only by identity in
+  // Talkersoft ID; the product API tracks NOTHING for them — no device
+  // registration, no managed config sync. They stay fully local (YAML + local
+  // speech). This is why device registration lives below this gate, not above it.
+  const licensed = !!status.lic && status.lic !== "free";
+  if (!licensed) {
+    apiMode = false;
+    setLicenseState({ signedIn: true, lic: status.lic || "free", mode: "local" });
+    toRenderer("config:changed", { mode: "local", lic: status.lic || "free" });
+    return;
+  }
+
+  // Licensed (paid) only: this machine joins the fleet. The FIRST time, ask what to
+  // call it — the name is how it'll be picked from a list later. After that just
+  // upsert (keeps last_seen fresh); fire-and-forget, never blocks dictation.
+  if (!deviceName()) {
+    askDeviceName(); // registers on save (or on close, using the hostname)
+  } else {
+    registerHost({
+      token: auth.token(),
+      deviceId: auth.deviceId,
+      appVersion: app.getVersion(),
+      label: deviceName(),
+      log: (m) => logLine("info", `registry: ${m}`),
+    });
+  }
 
   // Sync managed config ONCE per sign-in (not on every token refresh, which would
-  // clobber local runtime state). First join migrates the YAML; then the API drives.
+  // clobber local runtime state). First join migrates the YAML.
   if (!wasSignedIn) {
     wasSignedIn = true;
+    setLicenseState({ signedIn: true, lic: status.lic, mode: "connecting" });
     syncOnLogin({
       token: auth.token(), readDoc, writeDoc, avatarsDir: avatarsDir(),
       log: (m) => logLine("info", `config-sync: ${m}`),
     }).then((res) => {
       apiMode = res.mode === "api";
-      toRenderer("config:changed", { mode: res.mode });
+      setLicenseState({ signedIn: true, lic: status.lic, mode: res.mode });
+      toRenderer("config:changed", { mode: res.mode, lic: status.lic });
       toRenderer("agents:changed"); // renderers re-fetch agents:list
     }).catch((e) => logLine("err", `config-sync: ${e.message}`));
+  } else {
+    setLicenseState({ signedIn: true, lic: status.lic, mode: apiMode ? "api" : "local" });
   }
 });
 
@@ -1520,13 +1635,25 @@ ipcMain.handle("agents:generateAvatar", async (_e, id) => {
   if (!apiUrl) return { ok: false, error: "Dictation API not configured (api_url)." };
   patchAgent(id, { avatar_status: "pending" });
   try {
+    // The backend gates /generate-avatar on a wristband (and a qualifying
+    // license). We already hold a token when signed in — send it, or the call
+    // comes back 401 and avatars silently stop working.
+    const token = auth.token();
     const resp = await fetch(apiUrl + "/generate-avatar", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...(token ? { Authorization: "Bearer " + token } : {}),
+      },
       body: JSON.stringify({ agent_id: agent.id, name: agent.name, description: desc, accent_color: agent.color || "#4363d8" }),
       signal: AbortSignal.timeout(45000),
     });
-    if (!resp.ok) throw new Error(`API ${resp.status}: ${(await resp.text()).slice(0, 120)}`);
+    if (!resp.ok) {
+      const detail = (await resp.text()).slice(0, 200);
+      if (resp.status === 401) throw new Error("Sign in to generate avatars.");
+      if (resp.status === 403) throw new Error("Your plan doesn't include avatar generation.");
+      throw new Error(`API ${resp.status}: ${detail}`);
+    }
     const buf = Buffer.from(await resp.arrayBuffer());
     if (!buf.length) throw new Error("empty image");
     const file = path.join(avatarsDir(), `${agent.id}.png`);
@@ -1679,6 +1806,40 @@ ipcMain.handle("wez:paneIds", async () => {
   } catch (e) { return { ok: false, error: e.message, ids: [] }; }
 });
 
+// ── first-run onboarding (the login/create/free choice, BEFORE the guided tour) ─
+// Shown once on a CLEAN first run (no agents, not yet onboarded). The choice is
+// persisted as a top-level `onboarded:` flag so it never reappears. Force it for
+// testing with DICTATE_ONBOARD=1.
+let onboardWin = null;
+function onboarded() { try { return readDoc().onboarded === true; } catch { return false; } }
+function setOnboarded() { const d = readDoc(); d.onboarded = true; writeDoc(d); }
+function needsOnboarding() {
+  if (process.env.DICTATE_ONBOARD === "1") return true;
+  return !onboarded() && loadAgents().length === 0;
+}
+function createOnboardingWindow() {
+  if (onboardWin && !onboardWin.isDestroyed()) { onboardWin.show(); onboardWin.focus(); return; }
+  onboardWin = new BrowserWindow({
+    width: 480, height: 560, resizable: false, fullscreenable: false, minimizable: false,
+    title: "Welcome to Agent Arcade", titleBarStyle: "hiddenInset",
+    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false },
+  });
+  onboardWin.loadFile(path.join(__dirname, "renderer", "onboarding.html"));
+  onboardWin.center();
+}
+// The renderer calls this after the user picks (login/create → auth already ran;
+// free → straight through). Record it, close the choice window, and hand off to
+// the normal first-run experience (Arcade welcome/tour, or Studio).
+ipcMain.handle("onboarding:done", (_e, choice) => {
+  setOnboarded();
+  logLine("info", `onboarding: ${String(choice || "")}`);
+  if (onboardWin && !onboardWin.isDestroyed()) { onboardWin.close(); }
+  onboardWin = null;
+  if (wantArcade()) { openArcadeWindow(); }
+  else { if (!win || win.isDestroyed()) createWindow(); win.show(); win.focus(); }
+  return { ok: true };
+});
+
 function createWindow(opts) {
   win = new BrowserWindow({
     width: 1280, height: 940, minHeight: 760, title: DEV ? "Agent Arcade Studio (Dev)" : "Agent Arcade Studio",
@@ -1784,7 +1945,11 @@ app.whenReady().then(() => {
   if (!appIcon.isEmpty() && app.dock) app.dock.setIcon(appIcon);
   installAppMenu(); // app menu reads "Agent Arcade Studio" (not "Electron"/package name)
   const arcadeOnly = wantArcade(); // launched straight into the Arcade (tray "Launch Agent Arcade" / summon hotkey)
-  if (!arcadeOnly) createWindow(wantPreferences() ? { view: "settings" } : undefined); // Studio window only when launched AS Studio
+  // First run (clean config): show the login/create/free choice BEFORE any Studio/
+  // Arcade window or the tour. onboarding:done then opens the real window.
+  const firstRun = needsOnboarding();
+  if (firstRun) createOnboardingWindow();
+  else if (!arcadeOnly) createWindow(wantPreferences() ? { view: "settings" } : undefined); // Studio window only when launched AS Studio
   arcade.onArcadeClosed(() => {
     // Exiting the Arcade returns to the MENU BAR — never auto-pops Studio. If this
     // process exists only for the Arcade, quit (the launcher is home base). If Studio
@@ -1799,7 +1964,7 @@ app.whenReady().then(() => {
     if (!win || win.isDestroyed()) createWindow();
     win.show(); win.focus();
   });
-  if (arcadeOnly) openArcadeWindow(); // booted straight into the Arcade
+  if (!firstRun && arcadeOnly) openArcadeWindow(); // booted straight into the Arcade (unless onboarding is showing first)
   ensureLauncher(); // spawn the resident menu-bar launcher (it self-registers for login)
   // ONE capability probe at startup (or one speculative localhost probe when api_url
   // is blank). It derives dictationAvailable, pushes it to both renderers, and only

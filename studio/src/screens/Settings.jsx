@@ -4,12 +4,14 @@ import { SettingsGeneral } from "./SettingsGeneral.jsx";
 import { SettingsBackend } from "./SettingsBackend.jsx";
 import { SettingsDisplays } from "./SettingsDisplays.jsx";
 import { SettingsOrg } from "./SettingsOrg.jsx";
+import { SettingsLicense } from "./SettingsLicense.jsx";
 
 const TABS = [
   { id: "general", label: "General" },
   { id: "backend", label: "Dictation" },
   { id: "displays", label: "Displays" },
   { id: "filters", label: "Organization" },
+  { id: "license", label: "License" },
 ];
 
 export function Settings() {
@@ -39,6 +41,7 @@ export function Settings() {
       {stab === "backend" && <SettingsBackend />}
       {stab === "displays" && <SettingsDisplays />}
       {stab === "filters" && <SettingsOrg />}
+      {stab === "license" && <SettingsLicense />}
     </div>
   );
 }

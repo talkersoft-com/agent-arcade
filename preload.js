@@ -17,6 +17,13 @@ contextBridge.exposeInMainWorld("tester", {
   authLogin: () => ipcRenderer.invoke("auth:login"),
   authLogout: () => ipcRenderer.invoke("auth:logout"),
   onAuthChanged: (cb) => ipcRenderer.on("auth:changed", (_e, s) => cb(s)),
+  // First-run onboarding: record the choice (login/create/free) → main proceeds.
+  onboardingDone: (choice) => ipcRenderer.invoke("onboarding:done", choice),
+  // License view: tier + what it unlocks (+ device count when paid).
+  licenseGet: () => ipcRenderer.invoke("license:get"),
+  // Device identity: the friendly name this machine is known by.
+  deviceNameSuggest: () => ipcRenderer.invoke("deviceName:suggest"),
+  deviceNameSave: (name) => ipcRenderer.invoke("deviceName:save", name),
   micVolSet: (n) => ipcRenderer.invoke("mic:volume:set", n),
   // global hotkeys (Settings → Shortcuts)
   trayIcon: () => ipcRenderer.invoke("ui:trayIcon"),

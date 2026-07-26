@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+<title>Welcome to Agent Arcade</title>
+<style>
+  :root{
+    --bg:#0e131a;--surface:#161d27;--ink:#e7ecf3;--muted:#98a4b4;--faint:#6b7787;
+    --border:#2a323e;--accent:#2dd4bf;--accent-ink:#052b27;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;
+  }
+  @media (prefers-color-scheme: light){:root{
+    --bg:#f5f7fa;--surface:#fff;--ink:#18212f;--muted:#5a6676;--faint:#8b96a5;
+    --border:#dfe4ec;--accent:#0d9488;--accent-ink:#fff;
+  }}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);display:grid;place-items:center;-webkit-font-smoothing:antialiased;user-select:none;-webkit-app-region:drag}
+  .card{width:420px;max-width:92vw;text-align:center;padding:8px 20px 24px;-webkit-app-region:no-drag}
+  .orb{width:56px;height:56px;border-radius:50%;margin:0 auto 18px;background:radial-gradient(circle at 35% 30%, var(--accent), transparent 70%), conic-gradient(from 210deg, #2dd4bf, #0a63b0, #2dd4bf);box-shadow:0 0 30px -6px var(--accent)}
+  h1{font-size:22px;margin:0 0 6px;letter-spacing:-.01em}
+  p.sub{color:var(--muted);font-size:14px;margin:0 0 24px;line-height:1.5}
+  .choices{display:flex;flex-direction:column;gap:10px}
+  button{font:inherit;font-size:15px;cursor:pointer;border-radius:11px;padding:13px 16px;border:1px solid var(--border);background:var(--surface);color:var(--ink);transition:border-color .12s, transform .02s}
+  button:hover{border-color:var(--accent)}
+  button:active{transform:translateY(1px)}
+  button:disabled{opacity:.5;cursor:default}
+  button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+  button .lead{display:block}
+  button .desc{display:block;font-size:12px;color:var(--muted);margin-top:3px;font-weight:400}
+  button.primary .desc{color:rgba(255,255,255,.8)}
+  @media (prefers-color-scheme: light){button.primary .desc{color:rgba(255,255,255,.9)}}
+  .status{min-height:18px;margin-top:16px;font-size:13px;color:var(--faint)}
+  .status.err{color:#f87171}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="orb"></div>
+    <h1>Welcome to Agent Arcade</h1>
+    <p class="sub">Sign in to sync your agents across machines, or start free on this Mac — no account needed.</p>
+    <div class="choices">
+      <button class="primary" id="create">
+        <span class="lead">Create account with Google</span>
+        <span class="desc">New here — set up your account</span>
+      </button>
+      <button id="login">
+        <span class="lead">Log in to an existing account</span>
+        <span class="desc">Already have one</span>
+      </button>
+      <button id="free">
+        <span class="lead">Use the free version</span>
+        <span class="desc">Local only, no login — Apple-silicon speech</span>
+      </button>
+    </div>
+    <div class="status" id="status"></div>
+  </div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const status = $("status");
+  const btns = ["create", "login", "free"].map($);
+  function setBusy(b, msg, err){ btns.forEach(x => x.disabled = b); status.textContent = msg || ""; status.className = "status" + (err ? " err" : ""); }
+
+  async function signIn(choice){
+    setBusy(true, "Opening your browser to sign in…");
+    try {
+      const res = await window.tester.authLogin();
+      if (res && res.ok) { await window.tester.onboardingDone(choice); return; }
+      setBusy(false, (res && res.error) ? friendly(res.error) : "Sign-in didn’t complete. Try again.", true);
+    } catch (e) {
+      setBusy(false, "Sign-in failed: " + (e && e.message ? e.message : e), true);
+    }
+  }
+  function friendly(code){
+    return ({
+      device_seat_limit: "You’ve reached your device limit.",
+      google_verify_failed: "Google sign-in didn’t complete. Please try again.",
+      redirect_not_allowed: "This app isn’t an allowed sign-in destination.",
+    })[code] || ("Sign-in failed (" + code + ").");
+  }
+
+  $("create").addEventListener("click", () => signIn("create"));
+  $("login").addEventListener("click", () => signIn("login"));
+  $("free").addEventListener("click", async () => { setBusy(true, "Setting up your free workspace…"); await window.tester.onboardingDone("free"); });
+</script>
+</body>
+</html>
