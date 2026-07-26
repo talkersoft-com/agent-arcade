@@ -347,8 +347,11 @@ function writeServers(servers, active) {
 // unless DICTATION_API_URL overrides it (dev last-resort, highest priority).
 function loadApiUrl() {
   if (process.env.DICTATION_API_URL) return process.env.DICTATION_API_URL.trim();
-  // Joined → compiled speech DNS (no picker). Logged out → the user's chosen server.
-  if (signedIn) return COMPILED_SPEECH_URL;
+  // NOTE: the signed-in compiled-DNS override was reverted — it made the client
+  // want voice-dev while the shared daemon stayed on the active-server URL, which
+  // never converged (infinite daemon restart loop → dictation dead). Client and
+  // daemon must agree on ONE url; both use the active server. Re-add voice-dev only
+  // once the daemon is driven from the same source and convergence is tested.
   return (activeServer() || {}).url || "";
 }
 const nameKey = (s) => String(s || "").trim().toLowerCase();
