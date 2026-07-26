@@ -68,6 +68,18 @@ const SUSPEND_PATH = path.join(HV_DIR, DEV ? ".summon-suspend.dev" : ".summon-su
 // When joined, agents are managed online — hide the local Studio + Preferences.
 const REFRESH_FILE = path.join(HV_DIR, DEV ? "id-refresh.dev.dat" : "id-refresh.dat");
 function joined() { try { return fs.existsSync(REFRESH_FILE); } catch { return false; } }
+
+// License badge — written by main on each auth change (see setLicenseState). Shown
+// as a disabled tray item so the active license/mode is always visible. Absent
+// file → Free · local (the default, e.g. never signed in).
+const LICENSE_STATE_PATH = path.join(HV_DIR, DEV ? "agent-arcade-license.dev.json" : "agent-arcade-license.json");
+function licenseLine() {
+  try {
+    const s = JSON.parse(fs.readFileSync(LICENSE_STATE_PATH, "utf8"));
+    const where = s.mode === "api" ? "connected" : (s.mode === "connecting" ? "connecting…" : "local");
+    return `License: ${s.label || "Free"} · ${where}`;
+  } catch { return "License: Free · local"; }
+}
 function readSummonAccel() {
   try {
     const doc = yaml.load(fs.readFileSync(SETTINGS_PATH, "utf8")) || {};
@@ -213,6 +225,7 @@ function quitAgentArcade() {
 function buildMenu() {
   const items = [
     { label: `${APP_LABEL} v${app.getVersion()}`, enabled: false },
+    { label: licenseLine(), enabled: false },
     { type: "separator" },
     { label: "Launch Agent Arcade", click: launchArcade },
   ];
