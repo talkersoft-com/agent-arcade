@@ -76,6 +76,7 @@ const { connectDictation } = require("./lib/dictation-client");
 const { Auth } = require("./lib/auth");
 const { registerHost } = require("./lib/registry");
 const { syncOnLogin, pushConfig } = require("./lib/config-sync");
+const { fetchLicense, fetchEntitlements } = require("./lib/license");
 const { safeStorage } = require("electron");
 
 // Talkersoft ID auth. The identity service URL comes from the backend's
@@ -123,6 +124,24 @@ function setLicenseState({ signedIn: si, lic, mode }) {
   } catch (e) { logLine("err", `license-state: ${e.message}`); }
   toRenderer("license:changed", state);
 }
+
+// license:get — the app's license view. Paid reads its own authoritative record;
+// Free reads only the public, identity-free catalog (so an unpaid user is still
+// never tracked by the product API). Always answers, even offline.
+ipcMain.handle("license:get", async () => {
+  const st = auth.status ? auth.status() : { signedIn: signedIn, email: "", lic: "" };
+  const tier = (st.lic || "free").toString();
+  const paid = !!st.signedIn && tier !== "free";
+  const base = { signedIn: !!st.signedIn, tier, label: licenseLabel(tier), email: st.email || "", mode: apiMode ? "api" : "local", paid };
+  const log = (m) => logLine("info", `license: ${m}`);
+  if (paid) {
+    const lic = await fetchLicense({ token: auth.token(), log });
+    if (lic) return { ...base, entitlements: lic.entitlements || {}, deviceCount: lic.device_count, email: lic.email || base.email };
+    return { ...base, entitlements: null, deviceCount: null };
+  }
+  const all = await fetchEntitlements({ log });
+  return { ...base, entitlements: (all && all[tier]) || null, upgrade: (all && all.hobbyist) || null, deviceCount: null };
+});
 
 auth.on("change", (status) => {
   if (dc) dc.setToken(auth.token());
