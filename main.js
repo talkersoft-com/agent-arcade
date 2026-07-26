@@ -123,8 +123,8 @@ auth.on("change", (status) => {
   }
   if (transition) startupProbe().catch(() => {});
 
-  // Register this host on every signed-in change (login + each silent refresh —
-  // a natural heartbeat). Fire-and-forget; a registry hiccup never blocks dictation.
+  // Register this host on every signed-in change — free AND licensed — so the
+  // account knows which hosts joined. Fire-and-forget; never blocks dictation.
   registerHost({
     token: auth.token(),
     deviceId: auth.deviceId,
@@ -132,8 +132,18 @@ auth.on("change", (status) => {
     log: (m) => logLine("info", `registry: ${m}`),
   });
 
-  // Sync managed config ONCE per sign-in (not on every token refresh, which would
-  // clobber local runtime state). First join migrates the YAML; then the API drives.
+  // API mode is gated on a QUALIFYING license — NOT merely being signed in. A Free
+  // user (no active license) is known by identity but stays fully local: agents in
+  // YAML, no managed sync. Only a qualifying tier flips the app into API mode.
+  const licensed = !!status.lic && status.lic !== "free";
+  if (!licensed) {
+    apiMode = false;
+    toRenderer("config:changed", { mode: "local", lic: status.lic || "free" });
+    return;
+  }
+
+  // Licensed: sync managed config ONCE per sign-in (not on every token refresh,
+  // which would clobber local runtime state). First join migrates the YAML.
   if (!wasSignedIn) {
     wasSignedIn = true;
     syncOnLogin({
@@ -141,7 +151,7 @@ auth.on("change", (status) => {
       log: (m) => logLine("info", `config-sync: ${m}`),
     }).then((res) => {
       apiMode = res.mode === "api";
-      toRenderer("config:changed", { mode: res.mode });
+      toRenderer("config:changed", { mode: res.mode, lic: status.lic });
       toRenderer("agents:changed"); // renderers re-fetch agents:list
     }).catch((e) => logLine("err", `config-sync: ${e.message}`));
   }
@@ -1679,6 +1689,40 @@ ipcMain.handle("wez:paneIds", async () => {
   } catch (e) { return { ok: false, error: e.message, ids: [] }; }
 });
 
+// ── first-run onboarding (the login/create/free choice, BEFORE the guided tour) ─
+// Shown once on a CLEAN first run (no agents, not yet onboarded). The choice is
+// persisted as a top-level `onboarded:` flag so it never reappears. Force it for
+// testing with DICTATE_ONBOARD=1.
+let onboardWin = null;
+function onboarded() { try { return readDoc().onboarded === true; } catch { return false; } }
+function setOnboarded() { const d = readDoc(); d.onboarded = true; writeDoc(d); }
+function needsOnboarding() {
+  if (process.env.DICTATE_ONBOARD === "1") return true;
+  return !onboarded() && loadAgents().length === 0;
+}
+function createOnboardingWindow() {
+  if (onboardWin && !onboardWin.isDestroyed()) { onboardWin.show(); onboardWin.focus(); return; }
+  onboardWin = new BrowserWindow({
+    width: 480, height: 560, resizable: false, fullscreenable: false, minimizable: false,
+    title: "Welcome to Agent Arcade", titleBarStyle: "hiddenInset",
+    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false },
+  });
+  onboardWin.loadFile(path.join(__dirname, "renderer", "onboarding.html"));
+  onboardWin.center();
+}
+// The renderer calls this after the user picks (login/create → auth already ran;
+// free → straight through). Record it, close the choice window, and hand off to
+// the normal first-run experience (Arcade welcome/tour, or Studio).
+ipcMain.handle("onboarding:done", (_e, choice) => {
+  setOnboarded();
+  logLine("info", `onboarding: ${String(choice || "")}`);
+  if (onboardWin && !onboardWin.isDestroyed()) { onboardWin.close(); }
+  onboardWin = null;
+  if (wantArcade()) { openArcadeWindow(); }
+  else { if (!win || win.isDestroyed()) createWindow(); win.show(); win.focus(); }
+  return { ok: true };
+});
+
 function createWindow(opts) {
   win = new BrowserWindow({
     width: 1280, height: 940, minHeight: 760, title: DEV ? "Agent Arcade Studio (Dev)" : "Agent Arcade Studio",
@@ -1784,7 +1828,11 @@ app.whenReady().then(() => {
   if (!appIcon.isEmpty() && app.dock) app.dock.setIcon(appIcon);
   installAppMenu(); // app menu reads "Agent Arcade Studio" (not "Electron"/package name)
   const arcadeOnly = wantArcade(); // launched straight into the Arcade (tray "Launch Agent Arcade" / summon hotkey)
-  if (!arcadeOnly) createWindow(wantPreferences() ? { view: "settings" } : undefined); // Studio window only when launched AS Studio
+  // First run (clean config): show the login/create/free choice BEFORE any Studio/
+  // Arcade window or the tour. onboarding:done then opens the real window.
+  const firstRun = needsOnboarding();
+  if (firstRun) createOnboardingWindow();
+  else if (!arcadeOnly) createWindow(wantPreferences() ? { view: "settings" } : undefined); // Studio window only when launched AS Studio
   arcade.onArcadeClosed(() => {
     // Exiting the Arcade returns to the MENU BAR — never auto-pops Studio. If this
     // process exists only for the Arcade, quit (the launcher is home base). If Studio
@@ -1799,7 +1847,7 @@ app.whenReady().then(() => {
     if (!win || win.isDestroyed()) createWindow();
     win.show(); win.focus();
   });
-  if (arcadeOnly) openArcadeWindow(); // booted straight into the Arcade
+  if (!firstRun && arcadeOnly) openArcadeWindow(); // booted straight into the Arcade (unless onboarding is showing first)
   ensureLauncher(); // spawn the resident menu-bar launcher (it self-registers for login)
   // ONE capability probe at startup (or one speculative localhost probe when api_url
   // is blank). It derives dictationAvailable, pushes it to both renderers, and only
