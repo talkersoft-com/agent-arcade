@@ -42,21 +42,14 @@ function MgmtList({ items, agents, idKey, list, reload, save, del, reorder, empt
 }
 
 export function SettingsOrg() {
-  const systems = useStore((s) => s.systems);
   const groups = useStore((s) => s.groups);
   const agents = useStore((s) => s.agents);
   const loadOrg = useStore((s) => s.loadOrg);
 
-  const [sysName, setSysName] = useState("");
   const [grpName, setGrpName] = useState("");
 
-  const sysCount = (sid) => agents.filter((a) => a.system_id === sid).length;
   const grpCount = (gid) => agents.filter((a) => (a.group_id || "") === gid).length;
 
-  async function addSystem() {
-    const name = sysName.trim(); if (!name) return;
-    await tester.systemsSave({ name }); setSysName(""); loadOrg();
-  }
   async function addGroup() {
     const name = grpName.trim(); if (!name) return;
     await tester.groupsSave({ name }); setGrpName(""); loadOrg();
@@ -64,22 +57,8 @@ export function SettingsOrg() {
 
   return (
     <div className="panel active" style={{ overflow: "auto" }}>
-      <div className="hint sgroup-intro">Systems</div>
-      <div className="hint sgroup-intro">Machines or environments your agents run on — attach an agent to a system to filter the Arcade by it.</div>
-      <div className="row">
-        <input type="text" placeholder="System name — e.g. Home (MacBook Pro)" style={{ flex: 1 }}
-          value={sysName} onChange={(e) => setSysName(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addSystem(); } }} />
-        <button onClick={addSystem}>Add system</button>
-      </div>
-      <div id="systems-list" style={{ marginTop: 14 }}>
-        <MgmtList items={systems} agents={agents} idKey="sys" countOf={sysCount}
-          reload={loadOrg} save={(s) => tester.systemsSave(s)} del={(id) => tester.systemsDelete(id)} reorder={(ids) => tester.systemsReorder(ids)}
-          emptyHint='No systems yet — add one above.' />
-      </div>
-
-      <div className="hint sgroup-intro" style={{ marginTop: 18 }}>Groups</div>
-      <div className="hint sgroup-intro">Buckets to organize agents in the Agent Arcade — independent of systems, so a group can span machines. Agents with no group live in the built-in <b>Default</b>. The Arcade shows a group only when it has active agents on the system you're viewing.</div>
+      <div className="hint sgroup-intro">Menu groups</div>
+      <div className="hint sgroup-intro">The sections agents appear under in the Agent Arcade menu. Agents with no group live in the built-in <b>Default</b>, and a group only shows when it has active agents in it. Which <i>machine</i> an agent runs on is decided by its workspace, managed on the web console.</div>
       <div className="row">
         <input type="text" placeholder="Group name — e.g. Research" style={{ flex: 1 }}
           value={grpName} onChange={(e) => setGrpName(e.target.value)}
