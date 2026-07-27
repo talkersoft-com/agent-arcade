@@ -23,7 +23,6 @@ function initFields(agent) {
     esc_delay_ms: agent && Number.isFinite(agent.esc_delay_ms) ? agent.esc_delay_ms : 50,
     notes: agent ? (agent.notes || "") : "",
     group_id: agent ? (agent.group_id || "") : "",
-    system_id: agent ? (agent.system_id || "") : "",
     active: agent ? (agent.active !== false) : true,
     program: agent ? (agent.program || "claude") : "claude",
   };
@@ -48,11 +47,9 @@ export function AgentEditor({ editingId, onClose, onSaved }) {
 
   const [programs, setPrograms] = useState([]);
   const [groups, setGroups] = useState([]);
-  const [systems, setSystems] = useState([]);
   const [catalog, setCatalog] = useState([]);
 
   const [newGroup, setNewGroup] = useState(null); // null = hidden; string = field value
-  const [newSystem, setNewSystem] = useState(null);
 
   // Re-init when the editing target changes (e.g. after a clone jumps into the copy).
   useEffect(() => { setF(initFields(editing)); setSubtab("general"); setEditorMsg(""); setSessionRO(true); }, [editingId]);
@@ -61,11 +58,11 @@ export function AgentEditor({ editingId, onClose, onSaved }) {
   useEffect(() => {
     let live = true;
     (async () => {
-      const [p, g, sy, cat] = await Promise.all([
-        tester.agentPrograms(), tester.groupsList(), tester.systemsList(), tester.dictationOptionsCatalog(),
+      const [p, g, cat] = await Promise.all([
+        tester.agentPrograms(), tester.groupsList(), tester.dictationOptionsCatalog(),
       ]);
       if (!live) return;
-      setPrograms(p || []); setGroups(g || []); setSystems(sy || []); setCatalog(cat || []);
+      setPrograms(p || []); setGroups(g || []); setCatalog(cat || []);
     })();
     return () => { live = false; };
   }, []);
@@ -86,7 +83,7 @@ export function AgentEditor({ editingId, onClose, onSaved }) {
       session_id: session, color: f.color.trim(), text_cleanup: f.cleanup,
       dictation_options: f.dictation_options,
       esc_before_send: f.esc, esc_delay_ms: parseInt(f.esc_delay_ms, 10) || 50,
-      group_id: f.group_id, system_id: f.system_id, active: f.active, notes: f.notes.trim(),
+      group_id: f.group_id, active: f.active, notes: f.notes.trim(),
     };
     const saved = await tester.agentsSave(a);
     if (saved && saved.ok === false) return { ok: false, error: saved.error || "Could not save." };
@@ -132,16 +129,6 @@ export function AgentEditor({ editingId, onClose, onSaved }) {
     setGroups(list || []);
     setNewGroup(null);
     if (created) upd({ group_id: created.id });
-  }
-  async function addSystemInline() {
-    if (newSystem === null) { setNewSystem(""); return; }
-    const name = newSystem.trim();
-    if (!name) { setNewSystem(null); return; }
-    const created = await tester.systemsAdd(name);
-    const list = await tester.systemsList();
-    setSystems(list || []);
-    setNewSystem(null);
-    if (created && created.id) upd({ system_id: created.id });
   }
 
   const descLen = f.description.trim().length;
@@ -218,7 +205,7 @@ export function AgentEditor({ editingId, onClose, onSaved }) {
                 </div>
               </div>
             </div>
-            <div className="row"><label>Group</label>
+            <div className="row"><label>Menu group</label>
               <select style={{ flex: "0 1 320px" }} value={f.group_id} onChange={(e) => upd({ group_id: e.target.value })}>
                 <option value="">Default</option>
                 {groups.map((g) => <option key={g.id} value={g.id}>{g.name}{g.active === false ? " (inactive)" : ""}</option>)}
@@ -229,18 +216,6 @@ export function AgentEditor({ editingId, onClose, onSaved }) {
                   onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addGroupInline(); } }} />
               )}
               <button className="secondary" type="button" onClick={addGroupInline}>{newGroup === null ? "＋ New" : "Create"}</button>
-            </div>
-            <div className="row"><label>System</label>
-              <select style={{ flex: "0 1 320px" }} value={f.system_id} onChange={(e) => upd({ system_id: e.target.value })}>
-                <option value="">Default</option>
-                {systems.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
-              {newSystem !== null && (
-                <input type="text" placeholder="New system name" style={{ flex: "0 1 200px" }} autoFocus
-                  value={newSystem} onChange={(e) => setNewSystem(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addSystemInline(); } }} />
-              )}
-              <button className="secondary" type="button" onClick={addSystemInline}>{newSystem === null ? "＋ New" : "Create"}</button>
             </div>
             <div className="row"><label>Active</label>
               <label className="chk"><input type="checkbox" checked={f.active} onChange={(e) => upd({ active: e.target.checked })} /> Show this agent in the Agent Arcade (off = hidden there, still editable here)</label>

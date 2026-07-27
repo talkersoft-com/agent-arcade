@@ -101,7 +101,8 @@ function schedulePush() {
   if (!apiMode) return;
   clearTimeout(pushTimer);
   pushTimer = setTimeout(() => {
-    pushConfig({ token: auth.token(), readDoc, log: (m) => logLine("info", `config-sync: ${m}`) }).catch(() => {});
+    pushConfig({ token: auth.token(), deviceId: auth.deviceId, readDoc,
+      log: (m) => logLine("info", `config-sync: ${m}`) }).catch(() => {});
   }, 1500);
   if (pushTimer.unref) pushTimer.unref();
 }
@@ -132,6 +133,9 @@ function setLicenseState({ signedIn: si, lic, mode }) {
 // time a licensed user registers this machine; stored in the YAML alongside
 // everything else, and sent as the registry label.
 let deviceNameWin = null;
+// Set while a sign-in is waiting for the person to name this machine; resolving it
+// lets registration + config sync continue in the right order.
+let pendingDeviceName = null;
 function deviceName() { try { return (readDoc().device_name || "").toString().trim(); } catch { return ""; } }
 function setDeviceName(name) {
   const d = readDoc();
@@ -150,11 +154,10 @@ ipcMain.handle("deviceName:save", (_e, name) => {
   logLine("info", `device named "${deviceName()}"`);
   if (deviceNameWin && !deviceNameWin.isDestroyed()) deviceNameWin.close();
   deviceNameWin = null;
-  // Register (or re-label) now that we have the name the person chose.
-  registerHost({
-    token: auth.token(), deviceId: auth.deviceId, appVersion: app.getVersion(),
-    label: deviceName(), log: (m) => logLine("info", `registry: ${m}`),
-  });
+  // Registration is NOT done here: joinThenSync owns the order (register, then
+  // import into a workspace named after this machine). Releasing the waiter is
+  // all that's needed.
+  if (pendingDeviceName) { const go = pendingDeviceName; pendingDeviceName = null; go(); }
   return { ok: true };
 });
 function askDeviceName() {
@@ -166,15 +169,11 @@ function askDeviceName() {
   });
   deviceNameWin.loadFile(path.join(__dirname, "renderer", "device-name.html"));
   deviceNameWin.center();
-  // Closed without saving → fall back to the hostname so the device still registers.
+  // Closed without saving → carry on with the hostname, so a dismissed prompt
+  // can't strand the sign-in half-done.
   deviceNameWin.on("closed", () => {
     deviceNameWin = null;
-    if (!deviceName()) {
-      registerHost({
-        token: auth.token(), deviceId: auth.deviceId, appVersion: app.getVersion(),
-        log: (m) => logLine("info", `registry: ${m}`),
-      });
-    }
+    if (pendingDeviceName) { const go = pendingDeviceName; pendingDeviceName = null; go(); }
   });
 }
 
@@ -195,6 +194,28 @@ ipcMain.handle("license:get", async () => {
   const all = await fetchEntitlements({ log });
   return { ...base, entitlements: (all && all[tier]) || null, upgrade: (all && all.hobbyist) || null, deviceCount: null };
 });
+
+// joinThenSync registers this machine and only then pulls/imports its config —
+// the backend needs the device to exist before it will import into a workspace
+// for it. On a first run the name prompt resolves first, so the workspace is
+// named what the person chose rather than a hostname.
+async function joinThenSync(status) {
+  if (!deviceName()) {
+    await new Promise((resolve) => { pendingDeviceName = resolve; askDeviceName(); });
+  }
+  await registerHost({
+    token: auth.token(), deviceId: auth.deviceId, appVersion: app.getVersion(),
+    label: deviceName(), log: (m) => logLine("info", `registry: ${m}`),
+  });
+  const res = await syncOnLogin({
+    token: auth.token(), deviceId: auth.deviceId, readDoc, writeDoc, avatarsDir: avatarsDir(),
+    log: (m) => logLine("info", `config-sync: ${m}`),
+  });
+  apiMode = res.mode === "api";
+  setLicenseState({ signedIn: true, lic: status.lic, mode: res.mode });
+  toRenderer("config:changed", { mode: res.mode, lic: status.lic });
+  toRenderer("agents:changed"); // renderers re-fetch agents:list
+}
 
 auth.on("change", (status) => {
   if (dc) dc.setToken(auth.token());
@@ -228,36 +249,26 @@ auth.on("change", (status) => {
     return;
   }
 
-  // Licensed (paid) only: this machine joins the fleet. The FIRST time, ask what to
-  // call it — the name is how it'll be picked from a list later. After that just
-  // upsert (keeps last_seen fresh); fire-and-forget, never blocks dictation.
-  if (!deviceName()) {
-    askDeviceName(); // registers on save (or on close, using the hostname)
-  } else {
-    registerHost({
-      token: auth.token(),
-      deviceId: auth.deviceId,
-      appVersion: app.getVersion(),
-      label: deviceName(),
-      log: (m) => logLine("info", `registry: ${m}`),
-    });
-  }
-
-  // Sync managed config ONCE per sign-in (not on every token refresh, which would
-  // clobber local runtime state). First join migrates the YAML.
+  // Licensed (paid) only: this machine joins the fleet, then syncs.
+  //
+  // ORDER MATTERS. The backend imports a machine's YAML into a workspace of its
+  // own, and refuses to import for a device it has never seen. Registration used
+  // to be fire-and-forget, so on a brand-new machine the import raced ahead of it
+  // and was turned away — precisely the case this is for. So: register first,
+  // await it, then sync. On a first run the name prompt comes first and the sync
+  // waits for it, which is also the right order for a person.
   if (!wasSignedIn) {
     wasSignedIn = true;
     setLicenseState({ signedIn: true, lic: status.lic, mode: "connecting" });
-    syncOnLogin({
-      token: auth.token(), readDoc, writeDoc, avatarsDir: avatarsDir(),
-      log: (m) => logLine("info", `config-sync: ${m}`),
-    }).then((res) => {
-      apiMode = res.mode === "api";
-      setLicenseState({ signedIn: true, lic: status.lic, mode: res.mode });
-      toRenderer("config:changed", { mode: res.mode, lic: status.lic });
-      toRenderer("agents:changed"); // renderers re-fetch agents:list
-    }).catch((e) => logLine("err", `config-sync: ${e.message}`));
+    joinThenSync(status).catch((e) => logLine("err", `config-sync: ${e.message}`));
   } else {
+    // A later token refresh: keep last_seen fresh, nothing else.
+    if (deviceName()) {
+      registerHost({
+        token: auth.token(), deviceId: auth.deviceId, appVersion: app.getVersion(),
+        label: deviceName(), log: (m) => logLine("info", `registry: ${m}`),
+      });
+    }
     setLicenseState({ signedIn: true, lic: status.lic, mode: apiMode ? "api" : "local" });
   }
 });
