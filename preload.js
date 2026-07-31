@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld("tester", {
   onboardingDone: (choice) => ipcRenderer.invoke("onboarding:done", choice),
   // License view: tier + what it unlocks (+ device count when paid).
   licenseGet: () => ipcRenderer.invoke("license:get"),
+  editionGet: () => ipcRenderer.invoke("edition:get"),
   // Device identity: the friendly name this machine is known by.
   deviceNameSuggest: () => ipcRenderer.invoke("deviceName:suggest"),
   deviceNameSave: (name) => ipcRenderer.invoke("deviceName:save", name),

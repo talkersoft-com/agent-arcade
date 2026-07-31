@@ -37,15 +37,15 @@ import (
 )
 
 type inMsg struct {
-	Type      string `json:"type"`
-	JobID     string `json:"job_id"`
-	WavPath   string `json:"wav_path"`
-	Source    string `json:"source"`
+	Type             string `json:"type"`
+	JobID            string `json:"job_id"`
+	WavPath          string `json:"wav_path"`
+	Source           string `json:"source"`
 	DictationOptions string `json:"dictation_options"` // comma-separated dictation-option keys
 	Cleanup          *bool  `json:"cleanup"`           // nil = default on; false = skip AI cleanup layer
 
 	// Daemon protocol v1 (hello/shutdown) — unused in stdio mode.
-	Client     string `json:"client"`      // arcade | studio | launcher | cli
+	Client     string `json:"client"` // arcade | studio | launcher | cli
 	AppVersion string `json:"app_version"`
 	Protocol   int    `json:"protocol"`
 	Reason     string `json:"reason"`
@@ -53,23 +53,23 @@ type inMsg struct {
 }
 
 type outMsg struct {
-	Type        string `json:"type"`
-	JobID       string `json:"job_id,omitempty"`
-	State       string `json:"state,omitempty"`
-	Source      string `json:"source,omitempty"`
+	Type        string   `json:"type"`
+	JobID       string   `json:"job_id,omitempty"`
+	State       string   `json:"state,omitempty"`
+	Source      string   `json:"source,omitempty"`
 	RawText     string   `json:"raw_text,omitempty"`
 	CleanedText string   `json:"cleaned_text,omitempty"`
 	OutputType  string   `json:"output_type,omitempty"` // classified type (requirements/command/reply/chat)
 	Applied     []string `json:"applied,omitempty"`
 	MS          int64    `json:"ms,omitempty"`
-	Stage       string `json:"stage,omitempty"`
-	Error       string `json:"error,omitempty"`
-	APIURL      string `json:"api_url,omitempty"`
-	Healthy     *bool  `json:"healthy,omitempty"`
-	OK          *bool  `json:"ok,omitempty"`
-	Level       string `json:"level,omitempty"`
-	Msg         string `json:"msg,omitempty"`
-	Detail      string `json:"detail,omitempty"`
+	Stage       string   `json:"stage,omitempty"`
+	Error       string   `json:"error,omitempty"`
+	APIURL      string   `json:"api_url,omitempty"`
+	Healthy     *bool    `json:"healthy,omitempty"`
+	OK          *bool    `json:"ok,omitempty"`
+	Level       string   `json:"level,omitempty"`
+	Msg         string   `json:"msg,omitempty"`
+	Detail      string   `json:"detail,omitempty"`
 
 	// Daemon protocol v1 (welcome/stale/info_result) — unused in stdio mode.
 	DaemonVersion string   `json:"daemon_version,omitempty"`
@@ -80,11 +80,26 @@ type outMsg struct {
 }
 
 func main() {
-	// API endpoint is REQUIRED — no host is hardcoded. The Electron apps pass this
-	// from the YAML `api_url:`; standalone runs must set DICTATION_API_URL.
+	// Where speech runs. No host is ever hardcoded — the app resolves it through
+	// lib/backend.js and passes it in.
+	//
+	// A BACKEND-LESS DAEMON IS A VALID STATE. The free edition has no speech
+	// server unless the person installs one, and refusing to start there meant the
+	// only way to run the free edition was to have the paid edition's backend.
+	// With provider=none the daemon comes up, reports itself unhealthy, and says
+	// so plainly when asked to transcribe — instead of failing at launch with a
+	// message about a config key the app no longer even writes.
 	apiURL := strings.TrimSpace(os.Getenv("DICTATION_API_URL"))
-	if apiURL == "" {
-		fmt.Fprintln(os.Stderr, "DICTATION_API_URL is not set — configure api_url in ~/.hv/dictate-settings.yaml (or set the env var for standalone runs)")
+	provider := strings.TrimSpace(os.Getenv("DICTATION_PROVIDER"))
+	if provider == "" {
+		if apiURL == "" {
+			provider = "none"
+		} else {
+			provider = "http"
+		}
+	}
+	if provider == "http" && apiURL == "" {
+		fmt.Fprintln(os.Stderr, "DICTATION_PROVIDER=http needs DICTATION_API_URL — set it, or use DICTATION_PROVIDER=none for a backend-less daemon")
 		os.Exit(2)
 	}
 	api := newAPIClient(apiURL)

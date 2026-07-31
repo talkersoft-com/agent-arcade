@@ -102,10 +102,26 @@ function readDoc() {
   try { if (fs.existsSync(SETTINGS)) return yaml.load(fs.readFileSync(SETTINGS, "utf8")) || {}; } catch {}
   return {};
 }
-// DGX Spark API base URL — REQUIRED in the shared YAML (`api_url:`). No host is
-// hardcoded; the env var only acts as a dev override. Empty string = not configured.
+// Where speech runs, resolved through the ONE resolver every process shares, from
+// the SAME frozen edition the app booted with. The env var is a dev override only.
+//
+// This used to read `api_url` straight out of the YAML. That key is on
+// lib/backend.js's forbidden list and is stripped on every write, so for a real
+// user it resolved to an empty string — and the only reason dictation worked at
+// all is that some OTHER process had already handed the shared daemon its
+// backend. A daemon the Arcade had to spawn itself would have exited immediately
+// (go/main.go:87 refuses to start with no DICTATION_API_URL).
+const backend = require("../lib/backend");
+const editionState = require("../lib/edition");
+// Agents / groups / macros come from the STORE — the YAML in the local edition,
+// agent-arcade-api in the cloud edition. main.js owns its init; the Arcade only
+// reads. It never branches on which store it got.
+const store = require("../lib/store");
+const { AGENT_FIELDS: DEVICE_FIELDS } = require("../lib/device-state");
 function loadApiUrl() {
-  return (readDoc().api_url || "").toString().trim() || (process.env.DICTATION_API_URL || "").trim();
+  const override = (process.env.DICTATION_API_URL || "").trim();
+  if (override) return override;
+  return backend.resolve(readDoc(), editionState.isCloud()).url;
 }
 // global app settings (shared YAML `app:` block; written by Agent Arcade Studio).
 // compose_split = % of the ⌘E compose view given to the editor (rest = terminal).
@@ -136,7 +152,7 @@ function loadWezterm() {
   return { cols: cols > 0 ? cols : 0, rows: rows > 0 ? rows : 0 };
 }
 function loadAgents() {
-  const list = Array.isArray(readDoc().agents) ? readDoc().agents : [];
+  const list = store.agents();
   // Honor the drag-and-drop order set in Studio: stable sort by `order` so the rail
   // renders agents (within their groups) in the user's chosen order.
   return list.map((a) => ({
@@ -156,11 +172,11 @@ function loadAgents() {
   })).map((a, i) => ({ a, i })).sort((x, y) => (x.a.order - y.a.order) || (x.i - y.i)).map((x) => x.a);
 }
 function loadSystems() {
-  const list = Array.isArray(readDoc().systems) ? readDoc().systems : [];
+  const list = store.systems();
   return list.map((s) => ({ id: String(s.id || ""), name: String(s.name || ""), os: s.os || "mac" }));
 }
 function loadGroups() {
-  const list = Array.isArray(readDoc().groups) ? readDoc().groups : [];
+  const list = store.groups();
   return list
     .map((g) => ({ id: String(g.id || ""), name: String(g.name || ""), order: parseInt(g.order, 10) || 0, active: g.active === undefined ? true : !!g.active }))
     .sort((a, b) => a.order - b.order);
@@ -182,7 +198,7 @@ function argType(t) {
   }
 }
 function loadCommands() {
-  const list = Array.isArray(readDoc().commands) ? readDoc().commands : [];
+  const list = store.commands();
   return list.map((c) => ({
     id: String(c.id || ""),
     agent_id: String(c.agent_id || ""),                 // "" = global (every agent)
@@ -243,25 +259,26 @@ function muxPid() {
 }
 function reconcileMux() {
   const cur = muxPid(); if (!cur) return;            // no mux up yet → nothing to reconcile
-  const doc = readDoc();
-  const prev = String(doc.mux_id || "");
+  const dev = store.device();
+  const prev = dev.muxId();
   if (prev === cur) return;                          // same mux → stored pane ids still valid
   // Only a KNOWN, different previous mux means the ids are stale. A first run with no
   // recorded mux just adopts the current one (live ids are still validated normally),
   // so we don't orphan panes already running in this mux.
-  let cleared = false;
-  if (prev && Array.isArray(doc.agents)) doc.agents.forEach((a) => { if (a.pane_id) { a.pane_id = 0; cleared = true; } });
-  doc.mux_id = cur;
-  writeDoc(doc);
-  console.error(`[mux] ${prev ? (cleared ? "changed → cleared stale pane ids" : "changed") : "baseline set"} (mux=${cur})`);
+  const cleared = prev ? dev.clearPanes() : 0;
+  dev.setMuxId(cur);
+  console.error(`[mux] ${prev ? (cleared ? `changed → cleared ${cleared} stale pane id(s)` : "changed") : "baseline set"} (mux=${cur})`);
 }
+// Split a patch by OWNER. The live pane is a fact about this machine; the session
+// id belongs to the account. They used to land in the same YAML record, which is
+// how one laptop's pane id rode along to the API on the next push.
 function patchAgentRaw(id, fields) {
-  const doc = readDoc();
-  if (!Array.isArray(doc.agents)) return;
-  const a = doc.agents.find((x) => String(x.id) === String(id));
-  if (!a) return;
-  Object.assign(a, fields);
-  writeDoc(doc);
+  const dev = {}, acct = {};
+  for (const [k, v] of Object.entries(fields || {})) (DEVICE_FIELDS.includes(k) ? dev : acct)[k] = v;
+  if (Object.keys(dev).length) store.device().patchAgent(id, dev);
+  if (!Object.keys(acct).length) return;
+  const next = store.agents().map((a) => (String(a.id) === String(id) ? { ...a, ...acct } : a));
+  Promise.resolve(store.saveAgents(next)).catch((e) => console.error("[arcade] patch agent:", e.message));
 }
 // Claude only writes ~/.claude/projects/<proj>/<id>.jsonl after a real exchange, so a
 // never-used session id can't be --resume'd. Existence decides resume vs fresh start.

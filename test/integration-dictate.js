@@ -4,7 +4,11 @@
 "use strict";
 const net = require("net"), fs = require("fs"), os = require("os"), path = require("path");
 
-const SOCK = path.join(os.homedir(), ".hv", process.env.DICTATE_DEV ? "dictation.dev.sock" : "dictation.sock");
+// The socket carries the EDITION now (go/transport.go, lib/dictation-client.js),
+// so this must resolve it the same way the app does rather than guessing a name.
+const edition = require("../lib/edition");
+edition.resolve({ dev: !!process.env.DICTATE_DEV });
+const SOCK = require("../lib/dictation-client").localAddr();
 const WAV = process.argv[2];
 if (!WAV || !fs.existsSync(WAV)) { console.error("FAIL: need a readable wav path"); process.exit(1); }
 
