@@ -93,7 +93,10 @@ contextBridge.exposeInMainWorld("tester", {
   dictationApiUrl: () => ipcRenderer.invoke("dictation:apiUrl"),
   dictationTest: (url) => ipcRenderer.invoke("dictation:test", url),
   dictationSetApiUrl: (url) => ipcRenderer.invoke("dictation:setApiUrl", url),
-  // backend servers (multi-server, single-active; verb:noun IPC)
+  // backend mode: free (this Mac, a port) vs cloud (our embedded DNS, login required)
+  backendGet: () => ipcRenderer.invoke("backend:get"),
+  backendSet: (patch) => ipcRenderer.invoke("backend:set", patch),
+  // backend servers (legacy multi-server; superseded by backendGet/Set)
   serversList: () => ipcRenderer.invoke("servers:list"),
   serversAdd: (name, url) => ipcRenderer.invoke("servers:add", { name, url }),
   serversRemove: (name) => ipcRenderer.invoke("servers:remove", name),
