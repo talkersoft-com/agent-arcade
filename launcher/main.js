@@ -126,15 +126,31 @@ function registerSummon() {
 // Re-register whenever the settings YAML or the suspend sentinel changes. Watching
 // the dir (debounced) survives editors' atomic-save rename churn.
 let watchTimer = null;
+let daemonUrlNow = "";
 function watchConfig() {
   try {
     fs.watch(HV_DIR, (_evt, file) => {
-      if (file && (file === path.basename(SETTINGS_PATH) || file === path.basename(SUSPEND_PATH))) {
+      if (!file) return;
+      if (file === path.basename(SETTINGS_PATH) || file === path.basename(SUSPEND_PATH)) {
         clearTimeout(watchTimer); watchTimer = setTimeout(registerSummon, 120);
+      }
+      // Licence or backend settings changed → the daemon may now belong on a
+      // different host. Restarting it is cheap, and leaving it on the old one is
+      // exactly how the client and daemon end up disagreeing.
+      if (file === path.basename(SETTINGS_PATH) || file === path.basename(LICENSE_STATE_PATH)) {
+        clearTimeout(backendTimer);
+        backendTimer = setTimeout(() => {
+          const want = readApiUrl();
+          if (want === daemonUrlNow) return;
+          console.error(`[launcher] backend changed → restarting daemon`);
+          daemonUrlNow = want;
+          try { if (daemonChild) daemonChild.kill(); } catch {}
+        }, 250);
       }
     });
   } catch (e) { console.error("[launcher] watch:", e.message); }
 }
+let backendTimer = null;
 
 // The app is a background menu-bar utility — useless unless it's running — so it
 // ALWAYS opens at login (prod). No user toggle: to stop it, uninstall (or remove it
@@ -182,11 +198,18 @@ function showAbout() {
 // if that winner ever dies.
 const { connectDictation, shutdownDaemon } = require(path.join(ROOT, "lib", "dictation-client.js"));
 const GO_BIN = path.join(ROOT, "go", "bin", "dictation-go").replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
+// THE SAME resolver the app uses. This used to read `api_url` straight out of the
+// yaml, so a stale value there pointed the shared daemon at one host while the
+// client talked to another — and dictation came back 401 from a backend nobody
+// had authenticated to. One module, one answer, both processes.
+const backendResolver = require(path.join(ROOT, "lib", "backend.js"));
 function readApiUrl() {
   try {
     const doc = yaml.load(fs.readFileSync(SETTINGS_PATH, "utf8")) || {};
-    return (doc.api_url || "").toString().trim() || (process.env.DICTATION_API_URL || "").trim();
-  } catch { return (process.env.DICTATION_API_URL || "").trim(); }
+    const s = licenseState();
+    const paid = !!s.signedIn && !!s.lic && String(s.lic).toLowerCase() !== "free";
+    return backendResolver.resolve(doc, paid).url;
+  } catch { return ""; }
 }
 let daemonChild = null;
 let monitorClient = null;
@@ -195,9 +218,12 @@ let daemonBackoff = 250;
 function superviseDaemon() {
   if (quitting) return;
   const apiUrl = readApiUrl();
-  if (!apiUrl || !fs.existsSync(GO_BIN)) {           // not configured/built yet —
-    setTimeout(superviseDaemon, 30000); return;      // check again, don't crash-loop
+  // No url means dictation isn't on (free plan, not enabled) — there is nothing
+  // for the daemon to talk to, so don't run one.
+  if (!apiUrl || !fs.existsSync(GO_BIN)) {
+    setTimeout(superviseDaemon, 30000); return;
   }
+  daemonUrlNow = apiUrl;
   const t0 = Date.now();
   daemonChild = spawn(GO_BIN, ["--daemon"], { env: { ...process.env, DICTATION_API_URL: apiUrl }, stdio: "ignore" });
   daemonChild.once("error", (e) => { console.error("[launcher] daemon spawn:", e.message); daemonChild = null; setTimeout(superviseDaemon, 10000); });

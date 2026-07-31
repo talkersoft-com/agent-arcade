@@ -1,6 +1,6 @@
 {
   "name": "@talkersoft-com/agent-arcade",
-  "version": "0.7.6",
+  "version": "0.7.7",
   "description": "Agent Arcade — voice-driven control for your AI agents (Electron UI + a shared Go dictation daemon, NDJSON over a local socket).",
   "author": "talkersoft",
   "repository": {
