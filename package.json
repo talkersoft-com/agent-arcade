@@ -1,6 +1,6 @@
 {
   "name": "@talkersoft-com/agent-arcade",
-  "version": "0.7.9",
+  "version": "0.7.10",
   "description": "Agent Arcade — voice-driven control for your AI agents (Electron UI + a shared Go dictation daemon, NDJSON over a local socket).",
   "author": "talkersoft",
   "repository": {
@@ -52,6 +52,9 @@
     "dev:nobuild": "npm run kill:dev && DICTATE_DEV=1 electron . --launcher",
     "daemon": "go/bin/dictation-go --daemon",
     "daemon:smoke": "node scripts/daemon-smoke.js",
+    "test:clients": "node test/integration-clients.js arcade studio",
+    "test:dictate": "node test/integration-dictate.js",
+    "test:integration": "npm run test:clients && node test/integration-dictate.js $npm_config_wav",
     "arcade": "npm run build && electron . --arcade",
     "arcade:nobuild": "electron . --arcade"
   },

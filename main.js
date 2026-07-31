@@ -740,8 +740,18 @@ function applyProbe(probe) {
 // No retries, no polling, fail-closed.
 async function startupProbe() {
   const url = loadApiUrl();
+  // No backend for this plan yet is a NORMAL state, not a failure: the boot probe
+  // runs before the stored session is restored, and free-plan dictation is opt-in.
+  // Probing a blank url only produced an ERROR-level "no api_url", which surfaced
+  // as an alarming toast on every launch for a condition the user can't act on.
+  // Say nothing, mark dictation unavailable, and re-probe when the licence lands.
+  if (!url) {
+    logLine("info", "dictation not configured yet — no backend for this plan");
+    applyProbe({ ok: false, error: "not configured" });
+    return;
+  }
   const probe = await probeCapabilities(url);
-  logLine(probe.ok ? "info" : "err", `dictation probe ${url || "(blank)"} → ${probe.ok ? `asr:${probe.caps.asr}` : probe.error}`);
+  logLine(probe.ok ? "info" : "err", `dictation probe ${url} → ${probe.ok ? `asr:${probe.caps.asr}` : probe.error}`);
   applyProbe(probe);
 }
 function getDictation() { return { available: dictationAvailable, caps: lastCaps }; }

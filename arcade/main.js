@@ -505,17 +505,20 @@ function ensureDaemonClient() {
   dc.on("down", () => console.error("[arcade] dictation daemon unavailable — reconnecting"));
   return dc;
 }
-function spawnGo() {
-  // Gate on availability (Studio's probe): no reachable/ready backend → no bridge.
-  if (!dictationState.available) return;
-  const apiUrl = loadApiUrl();
-  if (!apiUrl) {
-    toRenderer("status", { state: "error", msg: `No API URL configured — set "api_url:" in ${SETTINGS} (e.g. api_url: http://host:9100)` });
-    return;
-  }
-  ensureDaemonClient();
-}
-function writeGo(o) { if (dc) dc.send(o); }
+// Connect UNCONDITIONALLY. This used to be gated on Studio's probe result, which
+// is what silently killed dictation: the Arcade opened before the licence had been
+// restored, the probe still said "unavailable", so the client was never created —
+// and every recording after that was captured, written to disk, and dropped by a
+// writeGo() that couldn't send and didn't say so.
+//
+// The gate bought nothing. The daemon client is cheap and reconnects on its own,
+// so connecting early and idling costs less than missing the moment the backend
+// becomes reachable. Availability still gates the dictation UI; it no longer gets
+// to decide whether we have a connection at all.
+function spawnGo() { ensureDaemonClient(); }
+// Returns false when the job could not be handed to the daemon. Callers MUST
+// surface that: a dictation that goes nowhere has to say so, never fail silently.
+function writeGo(o) { return !!(dc && dc.send(o)); }
 function runWez(args) {
   return new Promise((res, rej) => execFile(WEZ_BRIDGE, args, { env: weztermEnv(), maxBuffer: 4 << 20 },
     (e, so, se) => {
@@ -627,7 +630,17 @@ ipcMain.handle("arcade:dictate", (_e, payload) => {
   const jobId = `arc-${++jobSeq}`;
   pending[jobId] = { agentId: ag.id };
   toRenderer("status", { agentId: ag.id, state: "sending" });
-  writeGo({ type: "dictate", job_id: jobId, wav_path: tmp, source: "arcade", cleanup: ag.text_cleanup, dictation_options: ag.text_cleanup ? agentOptionsCSV(ag) : "" });
+  // A dropped job is reported, always. Silence here is the worst possible failure:
+  // the user speaks, the recording ends, and nothing happens — no text, no error,
+  // nothing to act on. If we can't send it, say so and drop the recording cleanly.
+  if (!writeGo({ type: "dictate", job_id: jobId, wav_path: tmp, source: "arcade", cleanup: ag.text_cleanup, dictation_options: ag.text_cleanup ? agentOptionsCSV(ag) : "" })) {
+    delete pending[jobId];
+    fs.unlink(tmp, () => {});
+    spawnGo(); // reconnect so the NEXT attempt has a chance
+    const msg = "Dictation service isn't connected — reconnecting. Try again in a moment.";
+    toRenderer("status", { agentId: ag.id, state: "error", msg });
+    return { ok: false, error: msg };
+  }
   return { ok: true };
 });
 // lockstep: when the arcade selection changes, switch WezTerm to that agent's
