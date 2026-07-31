@@ -8,7 +8,7 @@
 // This is NOT a separate executable — it's the same one-bundle app run in launcher
 // mode (selected by the `--launcher` flag / DICTATE_LAUNCHER env; see main.js).
 
-const { app, Tray, Menu, nativeImage, dialog, globalShortcut } = require("electron");
+const { app, Tray, Menu, nativeImage, dialog, globalShortcut, shell } = require("electron");
 const { spawn } = require("child_process");
 const path = require("path");
 const os = require("os");
@@ -53,6 +53,12 @@ function openStudio() { spawnBundle([]); }                  // plain → Studio
 function launchArcade() { spawnBundle(["--arcade"]); }      // → open the Agent Arcade window
 function openPreferences() { spawnBundle(["--preferences"]); } // → Studio, opened on Preferences
 function openAccount() { spawnBundle(["--account"]); }         // → the Account window
+// The console URL is internal, same as every other host in this app.
+const WEB_CONSOLE_URL = process.env.AGENT_ARCADE_WEB || "https://agent-arcade-dev.talkersoft.com";
+function openStudioOrWeb() {
+  if (studioIsWeb()) { shell.openExternal(WEB_CONSOLE_URL).catch(() => spawnBundle([])); return; }
+  spawnBundle([]);
+}
 
 // ── Global summon hotkey ────────────────────────────────────────────────────────
 // The launcher is the PERSISTENT process, so it (not the disposable Studio window)
@@ -74,12 +80,22 @@ const SUSPEND_PATH = path.join(HV_DIR, DEV ? ".summon-suspend.dev" : ".summon-su
 // as a disabled tray item so the active license/mode is always visible. Absent
 // file → Free · local (the default, e.g. never signed in).
 const LICENSE_STATE_PATH = path.join(HV_DIR, DEV ? "agent-arcade-license.dev.json" : "agent-arcade-license.json");
+function licenseState() {
+  try { return JSON.parse(fs.readFileSync(LICENSE_STATE_PATH, "utf8")) || {}; }
+  catch { return {}; }
+}
+// What the menu says about the plan. Deliberately no hostname and no environment —
+// a paid user sees "connected", never where they're connected TO.
 function licenseLine() {
-  try {
-    const s = JSON.parse(fs.readFileSync(LICENSE_STATE_PATH, "utf8"));
-    const where = s.mode === "api" ? "connected" : (s.mode === "connecting" ? "connecting…" : "local");
-    return `License: ${s.label || "Free"} · ${where}`;
-  } catch { return "License: Free · local"; }
+  const s = licenseState();
+  if (!s.signedIn) return "Free · on this Mac";
+  const paid = s.lic && String(s.lic).toLowerCase() !== "free";
+  return `${s.label || "Free"} · ${paid ? (s.mode === "connecting" ? "connecting…" : "connected") : "on this Mac"}`;
+}
+// Paid + signed in means agents are managed online, so Studio IS the web console.
+function studioIsWeb() {
+  const s = licenseState();
+  return !!s.signedIn && !!s.lic && String(s.lic).toLowerCase() !== "free";
 }
 function readSummonAccel() {
   try {
@@ -237,10 +253,12 @@ function buildMenu() {
   // to signing back in hidden: a dead end with no way out of it from the tray.
   // Preferences is where sign-in, the licence, dictation and displays live, so
   // hiding it can strand someone; showing it costs a joined user two menu lines.
+  const web = studioIsWeb();
   items.push(
-    { label: "Open Agent Arcade Studio", click: openStudio },
+    { label: web ? "Open Agent Arcade Studio ↗" : "Open Agent Arcade Studio", click: openStudioOrWeb },
     { label: "Preferences…", click: openPreferences },
-    { label: "Account…", click: openAccount },
+    // Signed out there is no account yet — say what the click does.
+    { label: licenseState().signedIn ? "Account…" : "Sign in…", click: openAccount },
   );
   items.push({ type: "separator" });
   items.push(

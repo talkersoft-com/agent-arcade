@@ -262,16 +262,15 @@ function MicSection({ app }) {
   );
 }
 
-// Where speech runs — the one choice that decides everything else.
+// Where speech runs — DERIVED, not chosen. A paid licence means our servers; a
+// free one (or no account) means this Mac. There is deliberately no picker, no
+// environment, and no hostname anywhere on this screen: which environment a build
+// talks to is ours to decide in the yaml, and a user should have to decompile to
+// find a host.
 //
-//   Free  — this Mac's Apple silicon. One machine, no account, nothing of ours
-//           involved. The port is adjustable because 9100 can collide with
-//           something already running and there'd otherwise be no way out.
-//   Cloud — our servers, at an embedded DNS name per environment. Always needs an
-//           account, because it's our GPU.
-//
-// Users never type a server URL: picking the bucket IS picking the backend.
-function BackendModeSection() {
+// The one adjustable thing is the local port, because something else on the
+// machine can already own it and there would otherwise be no way out.
+function SpeechBackendSection() {
   const [cfg, setCfg] = useState(null);
   const [port, setPort] = useState("");
   const [msg, setMsg] = useState("");
@@ -281,16 +280,21 @@ function BackendModeSection() {
     const c = await tester.backendGet();
     setCfg(c); setPort(String(c.port));
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    if (tester.onAuthChanged) tester.onAuthChanged(() => load()); // licence → backend
+    window.addEventListener("focus", load);
+    return () => window.removeEventListener("focus", load);
+  }, []);
 
-  async function apply(patch) {
-    const r = await tester.backendSet(patch);
+  async function savePort() {
+    const r = await tester.backendSet({ port });
     if (r && r.ok) { setCfg(r); setPort(String(r.port)); setMsg(""); setProbe(null); }
     else setMsg((r && r.error) || "Could not save.");
   }
   async function test() {
     setProbe({ symbol: "⣾", color: "#718096", text: "checking…" });
-    const r = await tester.dictationTest(cfg.url);
+    const r = await tester.backendTest();
     if (r && r.ok && r.caps && r.caps.asr === "ready") setProbe({ symbol: "✓", color: "#2f855a", text: "ready" });
     else if (r && r.ok && r.caps && r.caps.asr === "downloading") setProbe({ symbol: "⏳", color: "#b7791f", text: "model downloading" });
     else if (r && r.ok) setProbe({ symbol: "⚠", color: "#b7791f", text: "reachable, engine not ready" });
@@ -298,55 +302,49 @@ function BackendModeSection() {
   }
 
   if (!cfg) return <div className="hint">Loading…</div>;
-  const free = cfg.mode !== "cloud";
+  const cloud = cfg.mode === "cloud";
 
   return (
     <>
-      <div className="hint sgroup-intro" style={{ marginTop: 0 }}>Where speech runs</div>
+      <div className="hint sgroup-intro" style={{ marginTop: 0 }}>Speech</div>
       <div className="disp-actions" style={{ marginTop: 0, borderTop: "none", paddingTop: 0 }}>
         <div className="disp-act-row">
-          <div className="disp-act-icon">{free ? "🖥" : "☁️"}</div>
+          <div className="disp-act-icon">{cloud ? "☁️" : "🖥"}</div>
           <div className="disp-act-main">
-            <div className="disp-act-name">{free ? "This Mac" : "Agent Arcade cloud"}</div>
+            <div className="disp-act-name">
+              {cloud ? "Agent Arcade cloud" : "This Mac"}
+              {cloud ? <span className="badge run" style={{ marginLeft: 8 }}>connected</span> : null}
+            </div>
             <div className="disp-act-sub">
-              {free
-                ? "Apple silicon, on this machine. One machine, no account needed — nothing leaves your Mac."
-                : "Our servers. Requires an account, and your plan decides what you can use."}
+              {cloud
+                ? "Your plan includes cloud dictation, so speech runs on our servers."
+                : "Dictation runs on this Mac's Apple silicon. Nothing leaves your computer."}
             </div>
           </div>
           <div className="disp-act-trail">
-            <button className={free ? "" : "ghost"} onClick={() => apply({ mode: "free" })}>This Mac</button>
-            <button className={free ? "ghost" : ""} style={{ marginLeft: 6 }} onClick={() => apply({ mode: "cloud" })}>Cloud</button>
+            <button className="ghost" onClick={test}>Test</button>
+            {probe ? <span style={{ marginLeft: 10, color: probe.color }}>{probe.symbol} {probe.text}</span> : null}
           </div>
         </div>
       </div>
 
-      {free ? (
+      {!cloud && (
         <div className="row" style={{ marginTop: 10, alignItems: "center" }}>
           <label style={{ minWidth: 40 }}>Port</label>
           <input type="number" min="1" max="65535" style={{ width: 110 }} value={port}
             onChange={(e) => setPort(e.target.value)}
-            onBlur={() => apply({ port })}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); apply({ port }); } }} />
+            onBlur={savePort}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); savePort(); } }} />
           <span className="hint" style={{ marginLeft: 10 }}>
-            Change this if something else on your Mac already uses it.
+            Change this only if something else on your Mac already uses it.
           </span>
         </div>
-      ) : (
-        <div className="row" style={{ marginTop: 10, alignItems: "center" }}>
-          <label style={{ minWidth: 90 }}>Environment</label>
-          <select style={{ width: 180 }} value={cfg.env} onChange={(e) => apply({ env: e.target.value })}>
-            {cfg.envs.map((e) => <option key={e} value={e}>{e}</option>)}
-          </select>
-        </div>
       )}
-
-      <div className="row" style={{ marginTop: 8, alignItems: "center" }}>
-        <button className="ghost" onClick={test}>Test</button>
-        <code style={{ marginLeft: 10, fontSize: 12 }}>{cfg.url}</code>
-        {probe ? <span style={{ marginLeft: 10, color: probe.color }}>{probe.symbol} {probe.text}</span> : null}
-      </div>
       {msg ? <div className="hint" style={{ color: "#e53e3e", marginTop: 6 }}>{msg}</div> : null}
+      <div className="hint" style={{ marginTop: 8 }}>
+        Signed in on a paid plan, speech moves to our servers automatically. Sign out and it comes
+        straight back here — see the <b>License</b> tab.
+      </div>
     </>
   );
 }
@@ -397,7 +395,7 @@ export function SettingsBackend() {
 
   return (
     <div className="panel active" style={{ overflow: "auto" }}>
-      <BackendModeSection />
+      <SpeechBackendSection />
 
       <hr className="sep" />
 
