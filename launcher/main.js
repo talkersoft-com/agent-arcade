@@ -52,6 +52,7 @@ function spawnBundle(extraArgs) {
 function openStudio() { spawnBundle([]); }                  // plain → Studio
 function launchArcade() { spawnBundle(["--arcade"]); }      // → open the Agent Arcade window
 function openPreferences() { spawnBundle(["--preferences"]); } // → Studio, opened on Preferences
+function openAccount() { spawnBundle(["--account"]); }         // → the Account window
 
 // ── Global summon hotkey ────────────────────────────────────────────────────────
 // The launcher is the PERSISTENT process, so it (not the disposable Studio window)
@@ -239,6 +240,7 @@ function buildMenu() {
   items.push(
     { label: "Open Agent Arcade Studio", click: openStudio },
     { label: "Preferences…", click: openPreferences },
+    { label: "Account…", click: openAccount },
   );
   items.push({ type: "separator" });
   items.push(

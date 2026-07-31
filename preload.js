@@ -14,7 +14,7 @@ contextBridge.exposeInMainWorld("tester", {
   daemonRestart: () => ipcRenderer.invoke("daemon:restart"),
   // Talkersoft ID account (Preferences ▸ Account row)
   authStatus: () => ipcRenderer.invoke("auth:status"),
-  authLogin: () => ipcRenderer.invoke("auth:login"),
+  authLogin: (loginHint) => ipcRenderer.invoke("auth:login", loginHint),
   authLogout: () => ipcRenderer.invoke("auth:logout"),
   onAuthChanged: (cb) => ipcRenderer.on("auth:changed", (_e, s) => cb(s)),
   // First-run onboarding: record the choice (login/create/free) → main proceeds.
@@ -24,6 +24,9 @@ contextBridge.exposeInMainWorld("tester", {
   // Device identity: the friendly name this machine is known by.
   deviceNameSuggest: () => ipcRenderer.invoke("deviceName:suggest"),
   deviceNameSave: (name) => ipcRenderer.invoke("deviceName:save", name),
+  // The one Account window — every sign-in goes through it.
+  accountOpen: (reason) => ipcRenderer.invoke("account:open", reason),
+  accountDone: (how) => ipcRenderer.invoke("account:done", how),
   micVolSet: (n) => ipcRenderer.invoke("mic:volume:set", n),
   // global hotkeys (Settings → Shortcuts)
   trayIcon: () => ipcRenderer.invoke("ui:trayIcon"),

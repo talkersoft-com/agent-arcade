@@ -20,7 +20,6 @@ const labelFor = (k) => FEATURE_LABELS[k] || k.replace(/_/g, " ").replace(/^./, 
 export function SettingsLicense() {
   const [lic, setLic] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
 
   const refresh = async () => {
@@ -34,15 +33,10 @@ export function SettingsLicense() {
     return () => window.removeEventListener("focus", refresh);
   }, []);
 
-  const login = async () => {
-    setBusy(true); setMsg("Opening your browser…");
-    try {
-      const r = await tester.authLogin();
-      setMsg(r && r.ok ? "" : `Sign-in failed: ${(r && r.error) || "unknown"}`);
-    } catch (e) { setMsg("Sign-in failed: " + e.message); }
-    setBusy(false); refresh();
-  };
-  const logout = async () => { setBusy(true); try { await tester.authLogout(); } catch {} setBusy(false); refresh(); };
+  // Settings shows STATE; the Account window owns the transaction. Sign-in used to
+  // fire a browser straight from here, which is why it felt like Preferences threw
+  // you at a web page with no explanation and no say in which account was used.
+  const manage = async () => { await tester.accountOpen(""); };
 
   if (loading) return <div className="subpanel active"><div className="hint">Loading your license…</div></div>;
 
@@ -74,9 +68,7 @@ export function SettingsLicense() {
             </div>
           </div>
           <div className="disp-act-trail">
-            {l.signedIn
-              ? <button className="ghost" onClick={logout} disabled={busy}>{busy ? "…" : "Sign out"}</button>
-              : <button onClick={login} disabled={busy}>{busy ? "…" : "Sign in with Google"}</button>}
+            <button onClick={manage}>{l.signedIn ? "Manage account" : "Sign in"}</button>
           </div>
         </div>
       </div>
