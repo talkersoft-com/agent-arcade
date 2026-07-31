@@ -286,7 +286,7 @@ auth.on("change", (status) => {
     // pulled, or the token chain revoked after a reuse). Every cloud call will now
     // fail, so ask for a sign-in once rather than letting each failure emit its
     // own toast about a problem the user can't act on.
-    const lapsed = transition && !userSignedOut;
+    const lapsed = transition && !userSignedOut && cloudMode();
     apiMode = false;
     wasSignedIn = false;
     setLicenseState({ signedIn: false, lic: "free", mode: "local" });
@@ -302,6 +302,15 @@ auth.on("change", (status) => {
   // Talkersoft ID; the product API tracks NOTHING for them — no device
   // registration, no managed config sync. They stay fully local (YAML + local
   // speech). This is why device registration lives below this gate, not above it.
+  // Free mode consumes nothing of ours, so none of this applies — no licence
+  // check, no device registration, no managed config.
+  if (!cloudMode()) {
+    apiMode = false;
+    setLicenseState({ signedIn: true, lic: status.lic || "free", mode: "local" });
+    toRenderer("config:changed", { mode: "local", lic: status.lic || "free" });
+    return;
+  }
+
   const licensed = !!status.lic && status.lic !== "free";
   if (!licensed) {
     apiMode = false;
@@ -493,6 +502,76 @@ function reconcileMux() {
 //   2. else legacy doc.api_url set → [{name:"Default", url:api_url}] (migration);
 //   3. else → [{name:"Local", url:LOCALHOST_DEFAULT}] (fresh-install default).
 const LOCALHOST_DEFAULT = "http://localhost:9100";
+
+// ── the two buckets ────────────────────────────────────────────────────────────
+// There are exactly two ways to run this, and conflating them is what made the
+// app nag people for a login they didn't need:
+//
+//   free  — speech runs on THIS Mac (Apple silicon). localhost, one machine, and
+//           we never ask for an account, because nothing of ours is involved.
+//   cloud — speech runs on ours. The host is an EMBEDDED DNS name chosen by
+//           environment (the Spark today, GCP tomorrow, throwaway environments in
+//           between). A login is always required, because it's our GPU.
+//
+// Users never type a server URL. The only thing adjustable in free mode is the
+// PORT, because 9100 can collide with something else already on the machine and
+// there'd otherwise be no way out of that.
+const CLOUD_ENVS = {
+  dev: process.env.SPEECH_API_URL || "http://voice-dev.talkersoft.com:9100",
+};
+const DEFAULT_LOCAL_PORT = 9100;
+const DEFAULT_CLOUD_ENV = "dev";
+
+function backendMode() {
+  const doc = readDoc();
+  const m = String(doc.backend_mode || "").trim().toLowerCase();
+  if (m === "cloud" || m === "free") return m;
+  // No explicit mode yet — this config predates the split. Infer it from the
+  // server they were already using, because defaulting everyone to "free" would
+  // silently move working installs off their backend onto a localhost server they
+  // may not even run. A non-loopback active server means they were on ours.
+  try {
+    const url = (activeServer() || {}).url || "";
+    if (url) {
+      const h = new URL(url).hostname;
+      if (h && h !== "localhost" && h !== "127.0.0.1" && h !== "::1") return "cloud";
+    }
+  } catch {}
+  return "free";
+}
+function localPort() {
+  const n = parseInt(readDoc().local_port, 10);
+  return Number.isFinite(n) && n > 0 && n < 65536 ? n : DEFAULT_LOCAL_PORT;
+}
+function cloudEnv() {
+  const e = String(readDoc().cloud_env || "").trim();
+  return CLOUD_ENVS[e] ? e : DEFAULT_CLOUD_ENV;
+}
+// Cloud is ours, so it requires an account. Free never does — this single
+// predicate is what every prompt, the licence check, device registration and
+// config sync hang off, instead of "is the user signed in?".
+function cloudMode() { return backendMode() === "cloud"; }
+function backendConfig() {
+  return {
+    mode: backendMode(),
+    port: localPort(),
+    env: cloudEnv(),
+    envs: Object.keys(CLOUD_ENVS),
+    url: backendMode() === "cloud" ? CLOUD_ENVS[cloudEnv()] : `http://localhost:${localPort()}`,
+  };
+}
+function setBackendConfig(patch) {
+  const doc = readDoc();
+  if (patch && patch.mode) doc.backend_mode = patch.mode === "cloud" ? "cloud" : "free";
+  if (patch && patch.port !== undefined) {
+    const n = parseInt(patch.port, 10);
+    if (!Number.isFinite(n) || n <= 0 || n >= 65536) return { ok: false, error: "Enter a port between 1 and 65535." };
+    doc.local_port = n;
+  }
+  if (patch && patch.env && CLOUD_ENVS[patch.env]) doc.cloud_env = patch.env;
+  writeDoc(doc);
+  return { ok: true, ...backendConfig() };
+}
 // When signed in, the speech backend DNS is COMPILED IN — the user picks no
 // server (that's a logged-out-only choice). Overridable via env for testing.
 const COMPILED_SPEECH_URL = (process.env.SPEECH_API_URL || "http://voice-dev.talkersoft.com:9100").trim();
@@ -532,14 +611,12 @@ function writeServers(servers, active) {
 }
 // The base url to use for dictation/model/probe operations. The active server's url,
 // unless DICTATION_API_URL overrides it (dev last-resort, highest priority).
+// The ONE url both the client and the shared daemon use. (An earlier attempt
+// returned a different host when signed in, while the daemon stayed on the old
+// one — they never converged and dictation died in a restart loop. One source.)
 function loadApiUrl() {
   if (process.env.DICTATION_API_URL) return process.env.DICTATION_API_URL.trim();
-  // NOTE: the signed-in compiled-DNS override was reverted — it made the client
-  // want voice-dev while the shared daemon stayed on the active-server URL, which
-  // never converged (infinite daemon restart loop → dictation dead). Client and
-  // daemon must agree on ONE url; both use the active server. Re-add voice-dev only
-  // once the daemon is driven from the same source and convergence is tested.
-  return (activeServer() || {}).url || "";
+  return backendConfig().url;
 }
 const nameKey = (s) => String(s || "").trim().toLowerCase();
 // Server CRUD helpers (each persists via writeServers). Validation: non-empty trimmed
@@ -953,12 +1030,26 @@ function handleGo(m) {
     // retries once — no re-login unless the 90-day refresh token is truly dead.
     if (m.stage === "auth") {
       // Usually self-heals: refresh and re-push the token, and the next dictation
-      // works. When the refresh is REJECTED the session is genuinely dead — that
-      // fires auth's change event, which prompts. Swallowing it (as this did) left
-      // the user with a toast and nothing to do about it.
+      // works. When it can't, the session is dead and dictation stays broken until
+      // someone signs in — so ASK, right now.
+      //
+      // Two things this deliberately overrides:
+      //   • the signed-in→signed-out transition check, because someone already
+      //     signed out never transitions and would otherwise get a toast forever;
+      //   • the post-sign-out mute, because the user just pressed a key asking for
+      //     something that needs a session. Answering that isn't nagging — the
+      //     mute exists to stop UNPROMPTED popups, not to refuse a request.
       auth.refresh()
         .then(() => { if (dc) dc.setToken(auth.token()); })
-        .catch((e) => logLine("info", `dictation auth: ${e.message}`));
+        .catch((e) => {
+          // Only ask for a login if the backend is OURS. A local Apple-silicon
+          // server has no account to sign in to, so prompting there would be
+          // asking someone to authenticate to us in order to use their own Mac.
+          if (!cloudMode()) { logLine("info", `dictation auth: ${e.message}`); return; }
+          logLine("info", `dictation auth: ${e.message} — asking to sign in`);
+          userSignedOut = false;
+          openAccount("dictation");
+        });
     }
     toRenderer("dictation:event", { type: "error", agentId: j.agentId, error: m.error });
   }
@@ -1194,6 +1285,8 @@ ipcMain.handle("dictation:setApiUrl", async (_e, url) => {
 });
 
 // ── backend servers IPC (multi-server, single-active; verb:noun) ─────────────────
+ipcMain.handle("backend:get", () => backendConfig());
+ipcMain.handle("backend:set", (_e, patch) => setBackendConfig(patch || {}));
 ipcMain.handle("servers:list", () => serversList());
 ipcMain.handle("servers:add", (_e, p) => serversAdd(p && p.name, p && p.url));
 ipcMain.handle("servers:remove", (_e, name) => serversRemove(name));

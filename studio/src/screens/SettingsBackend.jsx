@@ -262,19 +262,102 @@ function MicSection({ app }) {
   );
 }
 
+// Where speech runs — the one choice that decides everything else.
+//
+//   Free  — this Mac's Apple silicon. One machine, no account, nothing of ours
+//           involved. The port is adjustable because 9100 can collide with
+//           something already running and there'd otherwise be no way out.
+//   Cloud — our servers, at an embedded DNS name per environment. Always needs an
+//           account, because it's our GPU.
+//
+// Users never type a server URL: picking the bucket IS picking the backend.
+function BackendModeSection() {
+  const [cfg, setCfg] = useState(null);
+  const [port, setPort] = useState("");
+  const [msg, setMsg] = useState("");
+  const [probe, setProbe] = useState(null);
+
+  const load = async () => {
+    const c = await tester.backendGet();
+    setCfg(c); setPort(String(c.port));
+  };
+  useEffect(() => { load(); }, []);
+
+  async function apply(patch) {
+    const r = await tester.backendSet(patch);
+    if (r && r.ok) { setCfg(r); setPort(String(r.port)); setMsg(""); setProbe(null); }
+    else setMsg((r && r.error) || "Could not save.");
+  }
+  async function test() {
+    setProbe({ symbol: "⣾", color: "#718096", text: "checking…" });
+    const r = await tester.dictationTest(cfg.url);
+    if (r && r.ok && r.caps && r.caps.asr === "ready") setProbe({ symbol: "✓", color: "#2f855a", text: "ready" });
+    else if (r && r.ok && r.caps && r.caps.asr === "downloading") setProbe({ symbol: "⏳", color: "#b7791f", text: "model downloading" });
+    else if (r && r.ok) setProbe({ symbol: "⚠", color: "#b7791f", text: "reachable, engine not ready" });
+    else setProbe({ symbol: "✗", color: "#c53030", text: (r && r.error) || "unreachable" });
+  }
+
+  if (!cfg) return <div className="hint">Loading…</div>;
+  const free = cfg.mode !== "cloud";
+
+  return (
+    <>
+      <div className="hint sgroup-intro" style={{ marginTop: 0 }}>Where speech runs</div>
+      <div className="disp-actions" style={{ marginTop: 0, borderTop: "none", paddingTop: 0 }}>
+        <div className="disp-act-row">
+          <div className="disp-act-icon">{free ? "🖥" : "☁️"}</div>
+          <div className="disp-act-main">
+            <div className="disp-act-name">{free ? "This Mac" : "Agent Arcade cloud"}</div>
+            <div className="disp-act-sub">
+              {free
+                ? "Apple silicon, on this machine. One machine, no account needed — nothing leaves your Mac."
+                : "Our servers. Requires an account, and your plan decides what you can use."}
+            </div>
+          </div>
+          <div className="disp-act-trail">
+            <button className={free ? "" : "ghost"} onClick={() => apply({ mode: "free" })}>This Mac</button>
+            <button className={free ? "ghost" : ""} style={{ marginLeft: 6 }} onClick={() => apply({ mode: "cloud" })}>Cloud</button>
+          </div>
+        </div>
+      </div>
+
+      {free ? (
+        <div className="row" style={{ marginTop: 10, alignItems: "center" }}>
+          <label style={{ minWidth: 40 }}>Port</label>
+          <input type="number" min="1" max="65535" style={{ width: 110 }} value={port}
+            onChange={(e) => setPort(e.target.value)}
+            onBlur={() => apply({ port })}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); apply({ port }); } }} />
+          <span className="hint" style={{ marginLeft: 10 }}>
+            Change this if something else on your Mac already uses it.
+          </span>
+        </div>
+      ) : (
+        <div className="row" style={{ marginTop: 10, alignItems: "center" }}>
+          <label style={{ minWidth: 90 }}>Environment</label>
+          <select style={{ width: 180 }} value={cfg.env} onChange={(e) => apply({ env: e.target.value })}>
+            {cfg.envs.map((e) => <option key={e} value={e}>{e}</option>)}
+          </select>
+        </div>
+      )}
+
+      <div className="row" style={{ marginTop: 8, alignItems: "center" }}>
+        <button className="ghost" onClick={test}>Test</button>
+        <code style={{ marginLeft: 10, fontSize: 12 }}>{cfg.url}</code>
+        {probe ? <span style={{ marginLeft: 10, color: probe.color }}>{probe.symbol} {probe.text}</span> : null}
+      </div>
+      {msg ? <div className="hint" style={{ color: "#e53e3e", marginTop: 6 }}>{msg}</div> : null}
+    </>
+  );
+}
+
 export function SettingsBackend() {
-  const servers = useStore((s) => s.servers);
-  const activeServer = useStore((s) => s.activeServer);
   const backendApiUrl = useStore((s) => s.backendApiUrl);
   const dictationAvailable = useStore((s) => s.dictationAvailable);
   const dictationCaps = useStore((s) => s.dictationCaps);
   const loadBackend = useStore((s) => s.loadBackend);
   const app = useStore((s) => s.app);
 
-  const [addName, setAddName] = useState("");
-  const [addUrl, setAddUrl] = useState("");
-  const [addMsg, setAddMsg] = useState({ text: "", color: "" });
-  const [probes, setProbes] = useState({}); // name -> {symbol,color,title}
 
   const [dictTail, setDictTail] = useState(Number.isFinite(app.dictation_tail_ms) ? app.dictation_tail_ms : 250);
   const [dictPad, setDictPad] = useState(Number.isFinite(app.dictation_pad_ms) ? app.dictation_pad_ms : 200);
@@ -283,37 +366,6 @@ export function SettingsBackend() {
     setDictPad(Number.isFinite(app.dictation_pad_ms) ? app.dictation_pad_ms : 200);
   }, [app]);
 
-  async function setActive(name) {
-    const res = await tester.serversSetActive(name);
-    if (res && res.ok) useStore.setState({ servers: res.servers, activeServer: res.active, backendApiUrl: (res.servers.find((s) => s.name === res.active) || {}).url || "" });
-    else loadBackend();
-  }
-  async function test(name) {
-    const srv = servers.find((s) => s.name === name); if (!srv) return;
-    setProbes((p) => ({ ...p, [name]: { symbol: "⣾", color: "#718096", title: "" } }));
-    const probe = await tester.dictationTest(srv.url);
-    let r;
-    if (probe && probe.ok && probe.caps && probe.caps.asr === "ready") r = { symbol: "✓", color: "#2f855a", title: "ready" };
-    else if (probe && probe.ok && probe.caps && probe.caps.asr === "downloading") r = { symbol: "⏳", color: "#b7791f", title: "model downloading" };
-    else if (probe && probe.ok) r = { symbol: "⚠", color: "#b7791f", title: "reachable, no ready engine" };
-    else r = { symbol: "✗", color: "#c53030", title: (probe && probe.error) || "unreachable" };
-    setProbes((p) => ({ ...p, [name]: r }));
-  }
-  async function remove(name) {
-    if (!confirm(`Remove server "${name}"?`)) return;
-    const res = await tester.serversRemove(name);
-    if (res && res.ok) useStore.setState({ servers: res.servers, activeServer: res.active, backendApiUrl: (res.servers.find((s) => s.name === res.active) || {}).url || "" });
-  }
-  async function add() {
-    const name = addName.trim(), url = addUrl.trim();
-    if (!name || !url) { setAddMsg({ text: "Name and URL are required.", color: "#c53030" }); return; }
-    setAddMsg({ text: "⣾ adding…", color: "#718096" });
-    const res = await tester.serversAdd(name, url);
-    if (!res || !res.ok) { setAddMsg({ text: (res && res.error) || "Couldn't add server.", color: "#c53030" }); return; }
-    useStore.setState({ servers: res.servers, activeServer: res.active, backendApiUrl: (res.servers.find((s) => s.name === res.active) || {}).url || "" });
-    setAddName(""); setAddUrl("");
-    setAddMsg({ text: `Added "${name}".`, color: "#2f855a" });
-  }
 
   async function saveTiming() {
     const saved = await tester.setApp({ dictation_tail_ms: parseInt(dictTail, 10), dictation_pad_ms: parseInt(dictPad, 10) });
@@ -345,51 +397,7 @@ export function SettingsBackend() {
 
   return (
     <div className="panel active" style={{ overflow: "auto" }}>
-      <div className="hint sgroup-intro">The dictation backends that transcribe your voice. Save several servers and pick exactly one as <b>active</b>. Dictation appears everywhere only when the active backend reports its speech engine is <b>ready</b>. Saved to <code>~/.hv/agent-arcade.yaml</code> (<code>servers</code> / <code>active_server</code>).</div>
-
-      <AccountSection />
-      <hr className="sep" />
-
-      <div id="servers-list" style={{ marginTop: 8 }}>
-        {!servers.length
-          ? <div className="hint">No servers yet — add one below.</div>
-          : servers.map((s) => {
-            const probe = probes[s.name];
-            return (
-              <div className="row" key={s.name} style={{ alignItems: "center", border: "1px solid rgba(128,128,128,0.2)", borderRadius: 8, padding: "8px 12px", marginBottom: 8, ...(s.name === activeServer ? { borderColor: "rgba(72,196,244,0.5)" } : {}) }}>
-                <label className="chk" style={{ marginRight: 6 }}>
-                  <input type="radio" name="srv-active" checked={s.name === activeServer} onChange={() => setActive(s.name)} /> Active
-                </label>
-                <b>{s.name}</b>
-                <code className="hint" style={{ marginLeft: 6, wordBreak: "break-all" }}>{s.url}</code>
-                <span className="hint" style={{ marginLeft: 8, minWidth: 14, color: probe ? probe.color : "" }} title={probe ? probe.title : ""}>{probe ? probe.symbol : ""}</span>
-                <button style={{ marginLeft: "auto" }} onClick={() => test(s.name)}>Test</button>
-                <button className="danger" style={{ marginLeft: 6 }} onClick={() => remove(s.name)}>Remove</button>
-              </div>
-            );
-          })}
-      </div>
-
-      <div className="row" style={{ marginTop: 8, alignItems: "center" }}>
-        <input type="text" placeholder="Name (e.g. Spark)" style={{ flex: "0 1 200px" }} value={addName} onChange={(e) => setAddName(e.target.value)} />
-        <input type="text" placeholder="http://host:9100" style={{ flex: 1, marginLeft: 8 }} value={addUrl} onChange={(e) => setAddUrl(e.target.value)} />
-        <button style={{ marginLeft: 8 }} onClick={add}>Add server</button>
-      </div>
-      <div className="hint" style={{ minHeight: 18, marginTop: 6, color: addMsg.color }}>{addMsg.text}</div>
-      <div className="hint" style={{ minHeight: 18, marginTop: 6, color: status.color }}>{status.html}</div>
-      <div className="hint">Select a server's radio to make it active — it re-checks and flips dictation on/off live. <b>Test</b> probes that server without changing the active one.</div>
-
-      <hr className="sep" />
-
-      <div className="row" style={{ marginTop: 0, alignItems: "center" }}>
-        <label style={{ width: 150 }}>Model</label>
-        <div className="hint" style={{ flex: 1, minHeight: 18 }}>
-          {repo ? <><b>{repo}</b> &nbsp;·&nbsp; {modelState}</> : (caps ? modelState : "—")}
-        </div>
-        <button style={{ marginLeft: 8 }} disabled={!local || !present} title={!local ? "only available for a local backend" : (!present ? "no model to reveal" : "Show the model folder in Finder")} onClick={modelReveal}>Reveal in Finder</button>
-        <button style={{ marginLeft: 6 }} disabled={!present} title={present ? "Delete the downloaded model on the backend" : "no model to remove"} onClick={modelRemove}>Remove model</button>
-      </div>
-      <div className="hint" style={{ marginTop: 4, wordBreak: "break-all" }}>{path}</div>
+      <BackendModeSection />
 
       <hr className="sep" />
 
