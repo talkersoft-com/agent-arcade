@@ -65,9 +65,9 @@ const HV_DIR = path.join(os.homedir(), ".hv");
 const SETTINGS_PATH = path.join(HV_DIR, DEV ? "agent-arcade.dev.yaml" : "agent-arcade.yaml");
 const SUSPEND_PATH = path.join(HV_DIR, DEV ? ".summon-suspend.dev" : ".summon-suspend");
 // Joined = a stored Talkersoft ID session exists (same file the auth layer writes).
-// When joined, agents are managed online — hide the local Studio + Preferences.
-const REFRESH_FILE = path.join(HV_DIR, DEV ? "id-refresh.dev.dat" : "id-refresh.dat");
-function joined() { try { return fs.existsSync(REFRESH_FILE); } catch { return false; } }
+// (A previous version hid Studio + Preferences when this file existed. It is no
+// longer consulted for that: a file on disk is not proof of a working session,
+// and treating it as one stranded signed-out users with no route back in.)
 
 // License badge — written by main on each auth change (see setLicenseState). Shown
 // as a disabled tray item so the active license/mode is always visible. Absent
@@ -229,13 +229,17 @@ function buildMenu() {
     { type: "separator" },
     { label: "Launch Agent Arcade", click: launchArcade },
   ];
-  // Joined users manage agents online — hide the local Studio + Preferences.
-  if (!joined()) {
-    items.push(
-      { label: "Open Agent Arcade Studio", click: openStudio },
-      { label: "Preferences…", click: openPreferences },
-    );
-  }
+  // ALWAYS available. These used to be hidden for "joined" users, on the theory
+  // that agents are managed online — but "joined" was decided by whether a
+  // refresh-token FILE existed, not by whether the session actually worked. A
+  // stale or revoked token therefore left the app signed out with the only route
+  // to signing back in hidden: a dead end with no way out of it from the tray.
+  // Preferences is where sign-in, the licence, dictation and displays live, so
+  // hiding it can strand someone; showing it costs a joined user two menu lines.
+  items.push(
+    { label: "Open Agent Arcade Studio", click: openStudio },
+    { label: "Preferences…", click: openPreferences },
+  );
   items.push({ type: "separator" });
   items.push(
     { label: `About ${APP_LABEL}…`, click: showAbout },
