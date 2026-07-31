@@ -30,3 +30,7 @@ func listenLocal() (net.Listener, error) {
 	_ = os.Chmod(p, 0o600) // single-user transport: owner only
 	return ln, nil
 }
+
+// localAddrPath is the filesystem path of the local socket, for the orphan
+// watchdog. Windows named pipes have no path, so that build returns "".
+func localAddrPath() string { return sockPath() }

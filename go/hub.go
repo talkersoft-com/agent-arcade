@@ -93,6 +93,19 @@ func runDaemon(api *apiClient, apiURL string) int {
 	d.healthy = api.healthy()
 	fmt.Fprintf(os.Stderr, "dictation-go: daemon v%s listening (api=%s healthy=%v)\n", version, apiURL, d.healthy)
 
+	// Orphan watchdog.
+	//
+	// A client that can't reach us unlinks the socket file and spawns a
+	// replacement. Our listener is still bound to the now-unlinked inode, so we
+	// keep running while being permanently unreachable: no client can connect, so
+	// we never get a shutdown, never learn our binary is stale, and never exit.
+	// Twelve of these accumulated on one machine, several pinned to a host that
+	// had since changed — which is what made a dictation bug look unfixable.
+	//
+	// So: if the socket path no longer refers to OUR socket, we've been replaced.
+	// Step down and let the successor serve.
+	go watchSocketOwnership(ln)
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -299,4 +312,27 @@ func (d *daemon) startJob(c *hubClient, msg inMsg) {
 		delete(d.jobs, msg.JobID)
 		d.mu.Unlock()
 	}()
+}
+
+// watchSocketOwnership exits the process once the socket path stops pointing at
+// the listener we bound — the signature of having been unlinked and replaced.
+// Closing the listener unblocks Accept, so the normal shutdown path runs.
+func watchSocketOwnership(ln net.Listener) {
+	path := localAddrPath()
+	if path == "" {
+		return // named pipes (Windows) have no path to watch
+	}
+	mine, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	for {
+		time.Sleep(20 * time.Second)
+		cur, err := os.Stat(path)
+		if err != nil || !os.SameFile(mine, cur) {
+			fmt.Fprintln(os.Stderr, "dictation-go: socket was replaced — stepping down")
+			_ = ln.Close()
+			return
+		}
+	}
 }
