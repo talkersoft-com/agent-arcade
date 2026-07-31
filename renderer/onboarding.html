@@ -42,12 +42,8 @@
     <p class="sub">Sign in to sync your agents across machines, or start free on this Mac — no account needed.</p>
     <div class="choices">
       <button class="primary" id="create">
-        <span class="lead">Create account with Google</span>
-        <span class="desc">New here — set up your account</span>
-      </button>
-      <button id="login">
-        <span class="lead">Log in to an existing account</span>
-        <span class="desc">Already have one</span>
+        <span class="lead">Continue with Google</span>
+        <span class="desc">Sign in, or create an account — you'll choose which</span>
       </button>
       <button id="free">
         <span class="lead">Use the free version</span>
@@ -59,7 +55,7 @@
 <script>
   const $ = (id) => document.getElementById(id);
   const status = $("status");
-  const btns = ["create", "login", "free"].map($);
+  const btns = ["create", "free"].map($);
   function setBusy(b, msg, err){ btns.forEach(x => x.disabled = b); status.textContent = msg || ""; status.className = "status" + (err ? " err" : ""); }
 
   async function signIn(choice){
@@ -80,8 +76,7 @@
     })[code] || ("Sign-in failed (" + code + ").");
   }
 
-  $("create").addEventListener("click", () => signIn("create"));
-  $("login").addEventListener("click", () => signIn("login"));
+  $("create").addEventListener("click", () => signIn("google"));
   $("free").addEventListener("click", async () => { setBusy(true, "Setting up your free workspace…"); await window.tester.onboardingDone("free"); });
 </script>
 </body>

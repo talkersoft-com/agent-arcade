@@ -177,6 +177,60 @@ function askDeviceName() {
   });
 }
 
+// ── signed-out prompt ──────────────────────────────────────────────────────────
+// When a session lapses there is nothing the app can do on its own: the refresh
+// token is dead, so every cloud call will keep failing. A toast on each failure
+// tells you something is wrong without telling you what to DO about it, and the
+// fix (Preferences ▸ sign in) is somewhere you have to already know to look.
+//
+// So we surface it where the user is: a small window that says what happened and
+// offers the one action that fixes it. The Google consent screen itself still
+// opens in the real browser — Google refuses OAuth inside embedded webviews, and
+// the loopback catcher in lib/auth.js expects that flow.
+//
+// SINGLE-FLIGHT. Several failures usually arrive together (a dictation, a config
+// push, an avatar). Without a guard each would open another window and another
+// browser tab. `userSignedOut` additionally suppresses it after a DELIBERATE sign
+// out, where being asked to sign back in would be obnoxious.
+let accountWin = null;
+let userSignedOut = false;
+// openAccount is the ONLY way a sign-in starts. Every door — first run, a lapsed
+// session, Preferences, the tray — opens this same window, so the transaction
+// looks identical wherever it began. `reason` only changes the wording, never the
+// mechanics.
+//
+// The Google consent screen itself still opens in the system browser: Google
+// refuses OAuth inside embedded webviews, and the loopback catcher in
+// lib/auth.js is built around that. What this window fixes is everything either
+// side of it — knowing who you're signed in as, being able to choose a different
+// account, and having somewhere that says what just happened.
+//
+// SINGLE-FLIGHT: failures arrive in clusters (a dictation, a config push, an
+// avatar). Without this, each would open its own window and its own browser tab.
+function openAccount(reason) {
+  if (accountWin && !accountWin.isDestroyed()) { accountWin.show(); accountWin.focus(); return; }
+  accountWin = new BrowserWindow({
+    width: 430, height: 470, resizable: false, fullscreenable: false, minimizable: false,
+    alwaysOnTop: reason === "expired" || reason === "lapsed",
+    title: "Account", titleBarStyle: "hiddenInset",
+    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false },
+  });
+  accountWin.loadFile(path.join(__dirname, "renderer", "account.html"), {
+    search: reason ? `?reason=${encodeURIComponent(reason)}` : "",
+  });
+  accountWin.center();
+  accountWin.on("closed", () => { accountWin = null; });
+  if (reason) logLine("info", `account window opened (${reason})`);
+}
+ipcMain.handle("account:open", (_e, reason) => { openAccount(reason || ""); return { ok: true }; });
+ipcMain.handle("account:done", (_e, how) => {
+  // Dismissing a prompt they didn't ask for shouldn't nag them again this run.
+  if (how === "closed") userSignedOut = true;
+  if (accountWin && !accountWin.isDestroyed()) accountWin.close();
+  accountWin = null;
+  return { ok: true };
+});
+
 // license:get — the app's license view. Paid reads its own authoritative record;
 // Free reads only the public, identity-free catalog (so an unpaid user is still
 // never tracked by the product API). Always answers, even offline.
@@ -227,11 +281,18 @@ auth.on("change", (status) => {
   signedIn = status.signedIn;
 
   if (!status.signedIn) {
+    // A true→false transition here is the session LAPSING, not a sign-out click:
+    // lib/auth.js forces this state when a refresh is rejected (expired, licence
+    // pulled, or the token chain revoked after a reuse). Every cloud call will now
+    // fail, so ask for a sign-in once rather than letting each failure emit its
+    // own toast about a problem the user can't act on.
+    const lapsed = transition && !userSignedOut;
     apiMode = false;
     wasSignedIn = false;
     setLicenseState({ signedIn: false, lic: "free", mode: "local" });
     toRenderer("config:changed", { mode: "local" });
     if (transition) startupProbe().catch(() => {});
+    if (lapsed) openAccount("expired");
     return;
   }
   if (transition) startupProbe().catch(() => {});
@@ -891,7 +952,13 @@ function handleGo(m) {
     // refresh and re-push the token so the NEXT dictation succeeds. The user just
     // retries once — no re-login unless the 90-day refresh token is truly dead.
     if (m.stage === "auth") {
-      auth.refresh().then(() => { if (dc) dc.setToken(auth.token()); }).catch(() => {});
+      // Usually self-heals: refresh and re-push the token, and the next dictation
+      // works. When the refresh is REJECTED the session is genuinely dead — that
+      // fires auth's change event, which prompts. Swallowing it (as this did) left
+      // the user with a toast and nothing to do about it.
+      auth.refresh()
+        .then(() => { if (dc) dc.setToken(auth.token()); })
+        .catch((e) => logLine("info", `dictation auth: ${e.message}`));
     }
     toRenderer("dictation:event", { type: "error", agentId: j.agentId, error: m.error });
   }
@@ -1080,11 +1147,13 @@ ipcMain.handle("auth:status", () => ({
   issuer: (lastCaps && lastCaps.auth_issuer) || "",
   required_by: (lastCaps && lastCaps.auth) || "off",
 }));
-ipcMain.handle("auth:login", async () => {
-  try { return { ok: true, status: await auth.login() }; }
+ipcMain.handle("auth:login", async (_e, loginHint) => {
+  userSignedOut = false;
+  try { return { ok: true, status: await auth.login(loginHint) }; }
   catch (e) { return { ok: false, error: e.message }; }
 });
 ipcMain.handle("auth:logout", async () => {
+  userSignedOut = true; // deliberate — never prompt them back in
   try { await auth.logout(); return { ok: true }; }
   catch (e) { return { ok: false, error: e.message }; }
 });
@@ -1916,6 +1985,7 @@ function ensureLauncher() {
 // Launched straight into the Arcade? The launcher's "Launch Arcade" passes
 // --arcade; DICTATE_ARCADE stays supported for back-compat.
 const wantArcade = () => process.argv.includes("--arcade") || process.env.DICTATE_ARCADE === "1";
+const wantAccount = () => process.argv.includes("--account");
 // Menu-bar "Preferences…" → open Studio straight on the Preferences view.
 const wantPreferences = (argv) => (Array.isArray(argv) ? argv : process.argv).includes("--preferences");
 // Open the Arcade window (or greet in Studio if there's no system yet).
@@ -1958,6 +2028,9 @@ app.whenReady().then(() => {
   const arcadeOnly = wantArcade(); // launched straight into the Arcade (tray "Launch Agent Arcade" / summon hotkey)
   // First run (clean config): show the login/create/free choice BEFORE any Studio/
   // Arcade window or the tour. onboarding:done then opens the real window.
+  // The tray's "Account…" opens the same window every other door opens.
+  if (wantAccount()) { openAccount(""); return; }
+
   const firstRun = needsOnboarding();
   if (firstRun) createOnboardingWindow();
   else if (!arcadeOnly) createWindow(wantPreferences() ? { view: "settings" } : undefined); // Studio window only when launched AS Studio
