@@ -194,6 +194,15 @@ func (d *daemon) serve(conn net.Conn) {
 		case "health":
 			go d.checkHealth()
 		case "dictate":
+			// No backend configured is a normal state for the free edition, not a
+			// fault — but it must be SAID. A job that silently goes nowhere is
+			// exactly the failure that cost a day: audio captured, temp file
+			// written, nothing sent, and nothing reported to anyone.
+			if d.apiURL == "" {
+				c.emit(outMsg{Type: "error", JobID: msg.JobID, Stage: "config",
+					Error: "dictation has no speech server on this plan — turn it on in Preferences, or sign in for the hosted one"})
+				break
+			}
 			d.startJob(c, msg)
 		case "info":
 			c.emit(d.infoResult())
@@ -246,16 +255,21 @@ func (d *daemon) broadcast(m outMsg) {
 // checkHealth probes the API and broadcasts the shared truth to every client
 // (all apps show the same availability, no matter who asked).
 func (d *daemon) checkHealth() {
-	ok := d.api.healthy()
+	// A daemon with no backend is unhealthy by definition — say so without making
+	// a request to nowhere, and give a reason a person can act on.
+	ok := d.apiURL != "" && d.api.healthy()
 	d.mu.Lock()
 	d.healthy = ok
 	d.mu.Unlock()
 	detail := d.apiURL
-	if !ok {
+	switch {
+	case d.apiURL == "":
+		detail = "no speech server configured for this plan"
+	case !ok:
 		detail = "no 200 from " + d.apiURL + "/health"
 	}
 	d.broadcast(outMsg{Type: "health_result", OK: &ok, Detail: detail})
-	fmt.Fprintf(os.Stderr, "dictation-go: health check: ok=%v (%s)\n", ok, d.apiURL)
+	fmt.Fprintf(os.Stderr, "dictation-go: health check: ok=%v (%s)\n", ok, detail)
 }
 
 func (d *daemon) infoResult() outMsg {

@@ -11,22 +11,42 @@ import (
 // Platform listeners live in transport_unix.go / transport_windows.go.
 var errDaemonRunning = errors.New("another daemon already owns the local address")
 
-// sockPath is the Unix-domain socket address (macOS/Linux). The dev build
-// (DICTATE_DEV) gets its own socket so `npm run dev` never hijacks the
-// production daemon, mirroring the split settings files.
-func sockPath() string {
-	name := "dictation.sock"
-	if os.Getenv("DICTATE_DEV") != "" {
-		name = "dictation.dev.sock"
+// The daemon is SINGLE-TENANT by construction: one apiURL, one token, one socket
+// (see hub.go). It was never built to serve two configurations at once, and
+// making it do so would mean moving the backend and the access token to
+// per-connection state — putting cloud auth code inside a free user's process,
+// where a bug in it can take down on-device dictation.
+//
+// So the two editions get their own daemons instead, distinguished exactly the
+// way dev and prod already are: by the address they bind. Different addresses
+// means they coexist; the SAME address means the ownership watchdog makes one of
+// them step down (hub.go), which is precisely what must not happen between a
+// free and a paid instance.
+//
+// An unset edition keeps the legacy name, so a standalone `--daemon` run and any
+// client from an older build still find each other.
+func addrSuffix() string {
+	dev := os.Getenv("DICTATE_DEV") != ""
+	part := ""
+	switch os.Getenv("DICTATION_EDITION") {
+	case "local":
+		part = ".local"
+	case "cloud":
+		part = ".cloud"
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".hv", name)
+	if dev {
+		part += ".dev"
+	}
+	return part
 }
 
-// pipeName is the Windows named-pipe address (same dev split).
+// sockPath is the Unix-domain socket address (macOS/Linux).
+func sockPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".hv", "dictation"+addrSuffix()+".sock")
+}
+
+// pipeName is the Windows named-pipe address (same split).
 func pipeName() string {
-	if os.Getenv("DICTATE_DEV") != "" {
-		return `\\.\pipe\agent-arcade-dictation-dev`
-	}
-	return `\\.\pipe\agent-arcade-dictation`
+	return `\\.\pipe\agent-arcade-dictation` + addrSuffix()
 }

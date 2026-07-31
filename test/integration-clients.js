@@ -13,7 +13,11 @@
 "use strict";
 const net = require("net"), os = require("os"), path = require("path");
 
-const SOCK = path.join(os.homedir(), ".hv", process.env.DICTATE_DEV ? "dictation.dev.sock" : "dictation.sock");
+// The socket carries the EDITION now (go/transport.go, lib/dictation-client.js),
+// so this must resolve it the same way the app does rather than guessing a name.
+const edition = require("../lib/edition");
+edition.resolve({ dev: !!process.env.DICTATE_DEV });
+const SOCK = require("../lib/dictation-client").localAddr();
 const want = process.argv.slice(2).filter(Boolean);
 if (!want.length) { console.error("usage: integration-clients.js <client> [client...]"); process.exit(1); }
 
