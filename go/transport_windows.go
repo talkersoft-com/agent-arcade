@@ -25,3 +25,6 @@ func listenLocal() (net.Listener, error) {
 	}
 	return nil, err
 }
+
+// localAddrPath: named pipes have no filesystem path to watch.
+func localAddrPath() string { return "" }
