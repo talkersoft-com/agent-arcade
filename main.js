@@ -83,8 +83,20 @@ const { safeStorage } = require("electron");
 // /capabilities (auth_issuer); when the backend requires no auth it stays empty
 // and the Account row simply says so. On every token change we push it to the
 // daemon (so dictation is authenticated) and to the renderer (the Account row).
+// OUR identity service, embedded like every other host of ours.
+//
+// This used to be discovered from whatever speech backend was active
+// (/capabilities → auth_issuer). That worked only while the active backend was
+// always ours. Now that a signed-out user is on the LOCAL engine, discovery
+// returns nothing — and signing in became impossible: you couldn't sign in
+// because you were local, and couldn't reach cloud because you weren't signed in.
+//
+// Signing in has nothing to do with where speech runs, so it no longer asks a
+// speech server. The backend's advertised issuer is still honoured if present, but
+// it can only ever be a fallback, never the reason sign-in is unavailable.
+const ID_ISSUER = (process.env.ID_ISSUER || "https://id-dev.talkersoft.com").replace(/\/+$/, "");
 const auth = new Auth({
-  issuer: () => (lastCaps && lastCaps.auth_issuer) || "",
+  issuer: () => ID_ISSUER || (lastCaps && lastCaps.auth_issuer) || "",
   safeStorage,
   openExternal: (u) => { try { shell.openExternal(u); } catch {} },
   log: (m) => logLine("info", `auth: ${m}`),
