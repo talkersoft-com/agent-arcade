@@ -717,9 +717,22 @@ function broadcastDictation() {
 }
 // Apply a probe result: update the flag + cache and broadcast it. Returns the probe.
 function applyProbe(probe) {
+  const was = dictationAvailable;
   dictationAvailable = availableFrom(probe);
   lastCaps = probe && probe.ok ? probe.caps : null;
   broadcastDictation();
+  // Availability DRIVES the daemon client, rather than a one-shot call at boot.
+  //
+  // The boot probe runs before the stored session is restored, so a paid user
+  // looks unlicensed for a moment: no backend, dictation unavailable, and the
+  // single spawnGo() at startup bailed. When the licence then arrived and the
+  // re-probe succeeded, nothing started the client — so no hello was ever sent,
+  // the daemon never received a token, and every dictation came back
+  // "401 authentication required" from a request with no bearer on it.
+  if (dictationAvailable && !was) {
+    logLine("info", "dictation became available — connecting the daemon");
+    spawnGo();
+  }
   return probe;
 }
 // Startup probe policy: probe the ACTIVE server's url exactly once. The fresh-install
@@ -1015,10 +1028,13 @@ function spawnGo() {
   // Gate on the cached probe: no reachable/ready backend → no client yet. (The
   // daemon itself is cheap, but a missing api_url would just spawn a failing one.)
   if (!dictationAvailable) return;
+  // No backend resolved is a NORMAL state, not a fault: not signed in on a paid
+  // plan, and free-plan dictation not switched on. Dictation is simply
+  // unavailable — the UI already reflects that. It used to raise an error telling
+  // the user to set `api_url` in the yaml, which is now a key we strip on write,
+  // so the instruction was both alarming and impossible to follow.
   if (!loadApiUrl()) {
-    const msg = `No API URL configured — set "api_url:" in ${SETTINGS_PATH} (e.g. api_url: http://host:9100)`;
-    logLine("err", msg);
-    toRenderer("dictation:event", { type: "error", stage: "spawn", error: msg });
+    logLine("info", "dictation not configured — no backend for this plan yet");
     return;
   }
   ensureDaemonClient();
