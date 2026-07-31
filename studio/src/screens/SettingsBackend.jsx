@@ -287,6 +287,11 @@ function SpeechBackendSection() {
     return () => window.removeEventListener("focus", load);
   }, []);
 
+  async function apply(patch) {
+    const r = await tester.backendSet(patch);
+    if (r && r.ok) { setCfg(r); setPort(String(r.port)); setMsg(""); setProbe(null); }
+    else setMsg((r && r.error) || "Could not save.");
+  }
   async function savePort() {
     const r = await tester.backendSet({ port });
     if (r && r.ok) { setCfg(r); setPort(String(r.port)); setMsg(""); setProbe(null); }
@@ -318,7 +323,9 @@ function SpeechBackendSection() {
             <div className="disp-act-sub">
               {cloud
                 ? "Your plan includes cloud dictation, so speech runs on our servers."
-                : "Dictation runs on this Mac's Apple silicon. Nothing leaves your computer."}
+                : (cfg.enabled
+                    ? "Dictation runs on this Mac's Apple silicon. Nothing leaves your computer."
+                    : "Dictation is off. Turn it on once the Apple-silicon speech server is installed.")}
             </div>
           </div>
           <div className="disp-act-trail">
@@ -329,6 +336,19 @@ function SpeechBackendSection() {
       </div>
 
       {!cloud && (
+        <div className="row" style={{ marginTop: 10, alignItems: "center" }}>
+          <label className="chk">
+            <input type="checkbox" checked={!!cfg.enabled}
+              onChange={(e) => apply({ enabled: e.target.checked })} />
+            {" "}Enable dictation on this Mac
+          </label>
+          <span className="hint" style={{ marginLeft: 10 }}>
+            Requires the Apple-silicon speech server installed separately — off until then.
+          </span>
+        </div>
+      )}
+
+      {!cloud && cfg.enabled && (
         <div className="row" style={{ marginTop: 10, alignItems: "center" }}>
           <label style={{ minWidth: 40 }}>Port</label>
           <input type="number" min="1" max="65535" style={{ width: 110 }} value={port}
