@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' file:; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
 <title>Welcome to Agent Arcade</title>
 <style>
   :root{
@@ -18,7 +18,8 @@
   html,body{height:100%;margin:0}
   body{background:var(--bg);color:var(--ink);font-family:var(--sans);display:grid;place-items:center;-webkit-font-smoothing:antialiased;user-select:none;-webkit-app-region:drag}
   .card{width:420px;max-width:92vw;text-align:center;padding:8px 20px 24px;-webkit-app-region:no-drag}
-  .orb{width:56px;height:56px;border-radius:50%;margin:0 auto 18px;background:radial-gradient(circle at 35% 30%, var(--accent), transparent 70%), conic-gradient(from 210deg, #2dd4bf, #0a63b0, #2dd4bf);box-shadow:0 0 30px -6px var(--accent)}
+  .orb{width:64px;height:64px;border-radius:15px;margin:0 auto 12px;display:block;box-shadow:0 8px 22px -10px rgba(0,0,0,.55)}
+  .brand{font-size:12px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:var(--accent);margin:0 0 12px}
   h1{font-size:22px;margin:0 0 6px;letter-spacing:-.01em}
   p.sub{color:var(--muted);font-size:14px;margin:0 0 24px;line-height:1.5}
   .choices{display:flex;flex-direction:column;gap:10px}
@@ -37,8 +38,9 @@
 </head>
 <body>
   <div class="card">
-    <div class="orb"></div>
-    <h1>Welcome to Agent Arcade</h1>
+    <img class="orb" src="../assets/app-icon.png" alt="" width="64" height="64" />
+    <div class="brand">Agent Arcade</div>
+    <h1>Welcome</h1>
     <p class="sub">Sign in to sync your agents across machines, or start free on this Mac — no account needed.</p>
     <div class="choices">
       <button class="primary" id="create">
