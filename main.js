@@ -212,7 +212,7 @@ function openAccount(reason) {
   accountWin = new BrowserWindow({
     width: 430, height: 470, resizable: false, fullscreenable: false, minimizable: false,
     alwaysOnTop: reason === "expired" || reason === "lapsed",
-    title: "Account", titleBarStyle: "hiddenInset",
+    title: DEV ? "Agent Arcade Account (Dev)" : "Agent Arcade Account", titleBarStyle: "hiddenInset",
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false },
   });
   accountWin.loadFile(path.join(__dirname, "renderer", "account.html"), {
