@@ -475,6 +475,9 @@ function readDoc() {
   return {};
 }
 function writeDoc(doc) {
+  // A URL must never live in user config — a stale one there is what pointed the
+  // daemon and the client at two different backends. See lib/backend.js.
+  try { backend.stripForbidden(doc); } catch {}
   fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
   fs.writeFileSync(SETTINGS_PATH, SETTINGS_HEADER + yaml.dump(doc, { lineWidth: 100 }));
 }
@@ -528,11 +531,10 @@ const LOCALHOST_DEFAULT = "http://localhost:9100";
 // Users never type a server URL. The only thing adjustable in free mode is the
 // PORT, because 9100 can collide with something else already on the machine and
 // there'd otherwise be no way out of that.
-const CLOUD_ENVS = {
-  dev: process.env.SPEECH_API_URL || "http://voice-dev.talkersoft.com:9100",
-};
-const DEFAULT_LOCAL_PORT = 9100;
-const DEFAULT_CLOUD_ENV = "dev";
+// Resolved in lib/backend.js — the SAME module the launcher uses, so the client
+// and the shared daemon can never disagree about the host. No URL is ever read
+// from the yaml; the licence decides cloud vs this Mac.
+const backend = require("./lib/backend");
 
 // THE LICENCE DECIDES THE BACKEND. There is no setting, and nothing for a user to
 // pick — holding a paid licence IS the choice:
@@ -551,14 +553,7 @@ function paidLicence() {
   } catch { return false; }
 }
 function backendMode() { return paidLicence() ? "cloud" : "free"; }
-function localPort() {
-  const n = parseInt(readDoc().local_port, 10);
-  return Number.isFinite(n) && n > 0 && n < 65536 ? n : DEFAULT_LOCAL_PORT;
-}
-function cloudEnv() {
-  const e = String(readDoc().cloud_env || "").trim();
-  return CLOUD_ENVS[e] ? e : DEFAULT_CLOUD_ENV;
-}
+
 // Cloud is ours, so it requires an account. Free never does — this single
 // predicate is what every prompt, the licence check, device registration and
 // config sync hang off, instead of "is the user signed in?".
@@ -575,9 +570,7 @@ function backendConfig() {
 }
 // The ONLY adjustable part: the local port. Mode and environment aren't settings.
 // The resolved host, for main's own use only.
-function backendConfig0Url() {
-  return backendMode() === "cloud" ? CLOUD_ENVS[cloudEnv()] : `http://localhost:${localPort()}`;
-}
+function backendConfig0Url() { return backend.resolve(readDoc(), paidLicence()).url; }
 function setBackendConfig(patch) {
   const doc = readDoc();
   if (patch && patch.port !== undefined) {
@@ -585,6 +578,8 @@ function setBackendConfig(patch) {
     if (!Number.isFinite(n) || n <= 0 || n >= 65536) return { ok: false, error: "Enter a port between 1 and 65535." };
     doc.local_port = n;
   }
+  // Free-plan dictation is opt-in: it needs a speech server installed separately.
+  if (patch && patch.enabled !== undefined) doc.dictation_enabled = !!patch.enabled;
   writeDoc(doc);
   return { ok: true, ...backendConfig() };
 }
