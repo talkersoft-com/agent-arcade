@@ -522,23 +522,23 @@ const CLOUD_ENVS = {
 const DEFAULT_LOCAL_PORT = 9100;
 const DEFAULT_CLOUD_ENV = "dev";
 
-function backendMode() {
-  const doc = readDoc();
-  const m = String(doc.backend_mode || "").trim().toLowerCase();
-  if (m === "cloud" || m === "free") return m;
-  // No explicit mode yet — this config predates the split. Infer it from the
-  // server they were already using, because defaulting everyone to "free" would
-  // silently move working installs off their backend onto a localhost server they
-  // may not even run. A non-loopback active server means they were on ours.
+// THE LICENCE DECIDES THE BACKEND. There is no setting, and nothing for a user to
+// pick — holding a paid licence IS the choice:
+//
+//   signed out          → this Mac
+//   signed in, free     → this Mac (identical; we just know who they are)
+//   signed in, paid     → ours
+//
+// Signing out therefore drops straight back to the local engine, which is always
+// there underneath. Which environment "ours" means lives in the yaml and is set by
+// us — a user should have to decompile to find a hostname.
+function paidLicence() {
   try {
-    const url = (activeServer() || {}).url || "";
-    if (url) {
-      const h = new URL(url).hostname;
-      if (h && h !== "localhost" && h !== "127.0.0.1" && h !== "::1") return "cloud";
-    }
-  } catch {}
-  return "free";
+    const st = auth.status();
+    return !!st.signedIn && !!st.lic && String(st.lic).toLowerCase() !== "free";
+  } catch { return false; }
 }
+function backendMode() { return paidLicence() ? "cloud" : "free"; }
 function localPort() {
   const n = parseInt(readDoc().local_port, 10);
   return Number.isFinite(n) && n > 0 && n < 65536 ? n : DEFAULT_LOCAL_PORT;
@@ -556,19 +556,23 @@ function backendConfig() {
     mode: backendMode(),
     port: localPort(),
     env: cloudEnv(),
-    envs: Object.keys(CLOUD_ENVS),
-    url: backendMode() === "cloud" ? CLOUD_ENVS[cloudEnv()] : `http://localhost:${localPort()}`,
+    // NOTE: the resolved host is deliberately NOT returned. The renderer never
+    // needs it (main runs the probe), and not sending it means the hostname isn't
+    // sitting in a window object for anyone poking at the UI.
   };
+}
+// The ONLY adjustable part: the local port. Mode and environment aren't settings.
+// The resolved host, for main's own use only.
+function backendConfig0Url() {
+  return backendMode() === "cloud" ? CLOUD_ENVS[cloudEnv()] : `http://localhost:${localPort()}`;
 }
 function setBackendConfig(patch) {
   const doc = readDoc();
-  if (patch && patch.mode) doc.backend_mode = patch.mode === "cloud" ? "cloud" : "free";
   if (patch && patch.port !== undefined) {
     const n = parseInt(patch.port, 10);
     if (!Number.isFinite(n) || n <= 0 || n >= 65536) return { ok: false, error: "Enter a port between 1 and 65535." };
     doc.local_port = n;
   }
-  if (patch && patch.env && CLOUD_ENVS[patch.env]) doc.cloud_env = patch.env;
   writeDoc(doc);
   return { ok: true, ...backendConfig() };
 }
@@ -616,7 +620,7 @@ function writeServers(servers, active) {
 // one — they never converged and dictation died in a restart loop. One source.)
 function loadApiUrl() {
   if (process.env.DICTATION_API_URL) return process.env.DICTATION_API_URL.trim();
-  return backendConfig().url;
+  return backendConfig0Url();
 }
 const nameKey = (s) => String(s || "").trim().toLowerCase();
 // Server CRUD helpers (each persists via writeServers). Validation: non-empty trimmed
@@ -1286,6 +1290,12 @@ ipcMain.handle("dictation:setApiUrl", async (_e, url) => {
 
 // ── backend servers IPC (multi-server, single-active; verb:noun) ─────────────────
 ipcMain.handle("backend:get", () => backendConfig());
+// Probe the CURRENT backend. main resolves the host, so the caller never learns it.
+ipcMain.handle("backend:test", async () => {
+  const url = backendConfig0Url();
+  const probe = await probeCapabilities(url);
+  return { ok: !!(probe && probe.ok), caps: (probe && probe.caps) || null, error: (probe && probe.error) || "" };
+});
 ipcMain.handle("backend:set", (_e, patch) => setBackendConfig(patch || {}));
 ipcMain.handle("servers:list", () => serversList());
 ipcMain.handle("servers:add", (_e, p) => serversAdd(p && p.name, p && p.url));
@@ -2158,6 +2168,11 @@ app.on("second-instance", (_e, argv) => {
   // The launcher's summon hotkey re-spawns `--arcade`; route it to a toggle so a
   // second press dismisses the Arcade (show ⇄ hide), matching the in-app ⌘ behavior.
   if (Array.isArray(argv) && argv.includes("--arcade")) { arcade.toggleArcade(); return; }
+  // "Account…" from the menu bar. This was MISSING, which is why the menu item did
+  // nothing: the launcher spawns the app with the flag, the single-instance lock
+  // routes it here, and with no branch it fell through to "open Studio" — or, when
+  // Studio was already open, to nothing visible at all.
+  if (Array.isArray(argv) && argv.includes("--account")) { openAccount(""); return; }
   // "Preferences…" from the menu bar: open/focus Studio and jump to the Preferences view.
   if (wantPreferences(argv)) {
     if (!win || win.isDestroyed()) { createWindow({ view: "settings" }); return; }

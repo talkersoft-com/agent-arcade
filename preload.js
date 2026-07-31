@@ -96,6 +96,7 @@ contextBridge.exposeInMainWorld("tester", {
   // backend mode: free (this Mac, a port) vs cloud (our embedded DNS, login required)
   backendGet: () => ipcRenderer.invoke("backend:get"),
   backendSet: (patch) => ipcRenderer.invoke("backend:set", patch),
+  backendTest: () => ipcRenderer.invoke("backend:test"),
   // backend servers (legacy multi-server; superseded by backendGet/Set)
   serversList: () => ipcRenderer.invoke("servers:list"),
   serversAdd: (name, url) => ipcRenderer.invoke("servers:add", { name, url }),
