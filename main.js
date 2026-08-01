@@ -309,6 +309,8 @@ ipcMain.handle("edition:get", () => {
     stale: st.stale,
     error: st.error || "",
     counts: { agents: store.agents().length, groups: store.groups().length, commands: store.commands().length },
+    // Which ARRANGEMENT this machine is on — the workspace a scoped read named.
+    workspaceName: st.workspaceName || "",
     // Macros only move to the account once the backend serves them; until then
     // they are still this machine's. Say which, rather than implying both.
     macrosOnAccount: EDITION === edition.CLOUD && store.status().commandsFromApi === true,

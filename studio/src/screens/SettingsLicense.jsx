@@ -58,7 +58,9 @@ export function SettingsLicense() {
   const source = ed && ed.isCloud
     ? {
         icon: "☁️",
-        title: "Your account is driving this app",
+        title: ed.workspaceName
+          ? `Your account is driving this app — workspace “${ed.workspaceName}”`
+          : "Your account is driving this app",
         body: <>Agents and groups come from your account, not from this Mac — edits here are saved to your account and appear on your other devices.{" "}
           {ed.macrosOnAccount
             ? "Your macros are on your account too."
