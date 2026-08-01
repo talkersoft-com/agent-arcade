@@ -93,7 +93,7 @@ const GO_BIN = unpacked(path.join(__dirname, "go", "bin", "dictation-go"));
 const { connectDictation } = require("./lib/dictation-client");
 const { Auth } = require("./lib/auth");
 const { registerHost } = require("./lib/registry");
-const { syncOnLogin, pushConfig } = require("./lib/config-sync");
+const { syncOnLogin } = require("./lib/config-sync");
 const { fetchLicense, fetchEntitlements } = require("./lib/license");
 const { safeStorage } = require("electron");
 
@@ -144,18 +144,13 @@ let apiMode = false;
 // not select the backend — the edition does that, and it was frozen at boot.
 let signedIn = false;
 let wasSignedIn = false;
-let pushTimer = null;
 
-// schedulePush mirrors a local edit up to the API (debounced) — only in API mode.
-function schedulePush() {
-  if (!apiMode) return;
-  clearTimeout(pushTimer);
-  pushTimer = setTimeout(() => {
-    pushConfig({ token: auth.token(), deviceId: auth.deviceId, readDoc,
-      log: (m) => logLine("info", `config-sync: ${m}`) }).catch(() => {});
-  }, 1500);
-  if (pushTimer.unref) pushTimer.unref();
-}
+// schedulePush is GONE — deliberately. It re-uploaded the whole YAML after any
+// local edit, which meant a stale local file could overwrite account data and
+// the "when does my YAML go up?" answer was "whenever". The contract now:
+// YAML → database exactly ONCE (the migrate, decided by the backend's per-device
+// flag), and every later edit goes through the store to the API directly. The
+// database never writes back into a YAML.
 
 // License badge state — a tiny file the launcher reads to show "License: Free ·
 // local" / "License: Hobbyist · connected" in the tray, so which license is in
@@ -335,6 +330,12 @@ async function joinThenSync(status) {
   const res = await syncOnLogin({
     token: auth.token(), deviceId: auth.deviceId, readDoc, device: store.device(), avatarsDir: avatarsDir(),
     log: (m) => logLine("info", `config-sync: ${m}`),
+    // Fired ONLY when the backend's per-device flag says this machine has never
+    // imported — the migrate moment is announced, and only when it is real.
+    onMigrating: (inv) => {
+      toRenderer("config:migrating", inv);
+      logLine("info", `config-sync: moving this Mac's setup to your account — ${inv.agents} agents, ${inv.groups} groups, ${inv.commands} macros (one-time, one-way)`);
+    },
   });
   apiMode = res.mode === "api";
   setLicenseState({ signedIn: true, lic: status.lic, mode: res.mode });
@@ -943,7 +944,6 @@ function saveSystems(systems) {
   const doc = readDoc();
   doc.systems = (systems || []).map(normalizeSystem);
   writeDoc(doc);
-  schedulePush(); // mirror to the API when joined (no-op locally)
   return loadSystems();
 }
 // ── agent programs (the catalog of selectable agent harnesses) ────────────────
