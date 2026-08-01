@@ -203,12 +203,18 @@ const GO_BIN = path.join(ROOT, "go", "bin", "dictation-go").replace(`${path.sep}
 // client talked to another — and dictation came back 401 from a backend nobody
 // had authenticated to. One module, one answer, both processes.
 const backendResolver = require(path.join(ROOT, "lib", "backend.js"));
+// The EDITION picks the backend — the same frozen decision the app boots with,
+// read from the same file. This used to re-derive "paid" from the live licence
+// badge, which could disagree with what the app had already decided for itself;
+// when it did, the daemon talked to one host while the client talked to another.
+// That is the exact failure lib/backend.js exists to prevent, so both processes
+// answer from one saved fact instead of two independent licence reads.
+const editionState = require(path.join(ROOT, "lib", "edition.js"));
 function readApiUrl() {
   try {
     const doc = yaml.load(fs.readFileSync(SETTINGS_PATH, "utf8")) || {};
-    const s = licenseState();
-    const paid = !!s.signedIn && !!s.lic && String(s.lic).toLowerCase() !== "free";
-    return backendResolver.resolve(doc, paid).url;
+    const saved = editionState.persisted({ dev: DEV });
+    return backendResolver.resolve(doc, saved && saved.edition === editionState.CLOUD).url;
   } catch { return ""; }
 }
 let daemonChild = null;
@@ -225,7 +231,20 @@ function superviseDaemon() {
   }
   daemonUrlNow = apiUrl;
   const t0 = Date.now();
-  daemonChild = spawn(GO_BIN, ["--daemon"], { env: { ...process.env, DICTATION_API_URL: apiUrl }, stdio: "ignore" });
+  // The edition picks the socket (go/transport.go). This process spawns the
+  // daemon on its own — separate from lib/dictation-client.js — so it has to pass
+  // the same environment, or it binds the legacy address and the app's clients
+  // connect to a daemon nobody else is talking to.
+  const saved = editionState.persisted({ dev: DEV });
+  daemonChild = spawn(GO_BIN, ["--daemon"], {
+    env: {
+      ...process.env,
+      DICTATION_API_URL: apiUrl || "",
+      DICTATION_PROVIDER: apiUrl ? "http" : "none",
+      DICTATION_EDITION: saved && saved.edition === editionState.CLOUD ? "cloud" : "local",
+    },
+    stdio: "ignore",
+  });
   daemonChild.once("error", (e) => { console.error("[launcher] daemon spawn:", e.message); daemonChild = null; setTimeout(superviseDaemon, 10000); });
   daemonChild.once("exit", (code) => {
     daemonChild = null;

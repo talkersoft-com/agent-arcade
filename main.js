@@ -53,6 +53,24 @@ app.setName(APP_NAME);
 // build — dev vs prod don't share a lock, but each is still a singleton.
 app.setPath("userData", path.join(app.getPath("appData"), APP_NAME));
 
+// ── THE EDITION DECISION ──────────────────────────────────────────────────────
+// Settled HERE: before any window, before the capability probe, before auth is
+// restored, and before the Arcade module is even required. From this line on the
+// answer cannot change, so nothing downstream has to cope with it changing.
+//
+//   local — free. YAML on this machine. No login, no API, no network.
+//   cloud — paid. The backend owns the config.
+//
+// This replaces deriving cloud-vs-local from live auth state on every read. Auth
+// restores asynchronously and lands AFTER windows are up, so for a moment at boot
+// a paid user looked unlicensed — and one-shot startup work that ran in that
+// window never got a second chance. See lib/edition.js for the full account.
+//
+// A licence change does not flip this in place: it persists the new edition and
+// restarts the app. See the auth "change" handler below.
+const edition = require("./lib/edition");
+const EDITION = edition.resolve({ dev: DEV, log: (m) => logLine("info", `edition: ${m}`) });
+
 // Single instance — ALWAYS (dev AND packaged). One app process owns Studio AND the
 // Agent Arcade window; a second launch (e.g. the launcher's "Launch Arcade", or just
 // re-running it) routes into the RUNNING instance via the second-instance event
@@ -75,7 +93,7 @@ const GO_BIN = unpacked(path.join(__dirname, "go", "bin", "dictation-go"));
 const { connectDictation } = require("./lib/dictation-client");
 const { Auth } = require("./lib/auth");
 const { registerHost } = require("./lib/registry");
-const { syncOnLogin, pushConfig } = require("./lib/config-sync");
+const { syncOnLogin } = require("./lib/config-sync");
 const { fetchLicense, fetchEntitlements } = require("./lib/license");
 const { safeStorage } = require("electron");
 
@@ -101,23 +119,38 @@ const auth = new Auth({
   openExternal: (u) => { try { shell.openExternal(u); } catch {} },
   log: (m) => logLine("info", `auth: ${m}`),
 });
+// The account store — agents / groups / systems / macros. ONE implementation,
+// picked from the frozen edition: the YAML locally, agent-arcade-api in the cloud
+// edition. Nothing downstream branches on which; see lib/store/index.js.
+//
+// Initialised here, before any window, so the very first loadAgents() answers from
+// the right place. In the cloud edition that first answer comes from the on-disk
+// cache (instant, works offline) and converges when start()'s refresh lands.
+const store = require("./lib/store");
+store.init({
+  dir: path.join(os.homedir(), ".hv"),
+  dev: DEV,
+  readDoc, writeDoc,
+  token: () => auth.token(),
+  deviceId: auth.deviceId,
+  log: (m) => logLine("info", m),
+  onChange: () => { toRenderer("agents:changed"); toRenderer("config:changed", { mode: store.isCloud() ? "api" : "local" }); },
+});
+
 // Managed-config mode: false = local YAML (anonymous, the free path); true = the
 // backend drives agents (joined). Set by the sign-in sync below.
 let apiMode = false;
-let signedIn = false; // when true, loadApiUrl compiles the speech backend (no picker)
+// Tracked only to spot a sign-in/sign-out TRANSITION in the auth handler. It does
+// not select the backend — the edition does that, and it was frozen at boot.
+let signedIn = false;
 let wasSignedIn = false;
-let pushTimer = null;
 
-// schedulePush mirrors a local edit up to the API (debounced) — only in API mode.
-function schedulePush() {
-  if (!apiMode) return;
-  clearTimeout(pushTimer);
-  pushTimer = setTimeout(() => {
-    pushConfig({ token: auth.token(), deviceId: auth.deviceId, readDoc,
-      log: (m) => logLine("info", `config-sync: ${m}`) }).catch(() => {});
-  }, 1500);
-  if (pushTimer.unref) pushTimer.unref();
-}
+// schedulePush is GONE — deliberately. It re-uploaded the whole YAML after any
+// local edit, which meant a stale local file could overwrite account data and
+// the "when does my YAML go up?" answer was "whenever". The contract now:
+// YAML → database exactly ONCE (the migrate, decided by the backend's per-device
+// flag), and every later edit goes through the store to the API directly. The
+// database never writes back into a YAML.
 
 // License badge state — a tiny file the launcher reads to show "License: Free ·
 // local" / "License: Hobbyist · connected" in the tray, so which license is in
@@ -261,6 +294,29 @@ ipcMain.handle("license:get", async () => {
   return { ...base, entitlements: (all && all[tier]) || null, upgrade: (all && all.hobbyist) || null, deviceCount: null };
 });
 
+// edition:get — what is driving this app's data, in the app's own words.
+//
+// This exists because "am I on my own file or my account?" was invisible. The
+// old license row said "connected", which described the SESSION, not the source
+// of the agents on screen — and for a long while it was a label over a lie: the
+// app said connected and went on reading the local YAML anyway.
+ipcMain.handle("edition:get", () => {
+  const st = store.status();
+  return {
+    edition: EDITION,
+    isCloud: EDITION === edition.CLOUD,
+    ok: st.ok,
+    stale: st.stale,
+    error: st.error || "",
+    counts: { agents: store.agents().length, groups: store.groups().length, commands: store.commands().length },
+    // Which ARRANGEMENT this machine is on — the workspace a scoped read named.
+    workspaceName: st.workspaceName || "",
+    // Macros only move to the account once the backend serves them; until then
+    // they are still this machine's. Say which, rather than implying both.
+    macrosOnAccount: EDITION === edition.CLOUD && store.status().commandsFromApi === true,
+  };
+});
+
 // joinThenSync registers this machine and only then pulls/imports its config —
 // the backend needs the device to exist before it will import into a workspace
 // for it. On a first run the name prompt resolves first, so the workspace is
@@ -274,64 +330,120 @@ async function joinThenSync(status) {
     label: deviceName(), log: (m) => logLine("info", `registry: ${m}`),
   });
   const res = await syncOnLogin({
-    token: auth.token(), deviceId: auth.deviceId, readDoc, writeDoc, avatarsDir: avatarsDir(),
+    token: auth.token(), deviceId: auth.deviceId, readDoc, device: store.device(), avatarsDir: avatarsDir(),
     log: (m) => logLine("info", `config-sync: ${m}`),
+    // Fired ONLY when the backend's per-device flag says this machine has never
+    // imported — the migrate moment is announced, and only when it is real.
+    onMigrating: (inv) => {
+      toRenderer("config:migrating", inv);
+      logLine("info", `config-sync: moving this Mac's setup to your account — ${inv.agents} agents, ${inv.groups} groups, ${inv.commands} macros (one-time, one-way)`);
+    },
   });
   apiMode = res.mode === "api";
   setLicenseState({ signedIn: true, lic: status.lic, mode: res.mode });
   toRenderer("config:changed", { mode: res.mode, lic: status.lic });
   toRenderer("agents:changed"); // renderers re-fetch agents:list
+  return res.mode; // "api" only when the backend actually took the config
+}
+
+// relaunchApp restarts this process. The edition is decided at boot (top of this
+// file), so changing it means going back through boot — there is deliberately no
+// in-place path. WezTerm panes survive: the mux is a separate process and pane ids
+// are persisted, so agents come back attached to the terminals they were in.
+function relaunchApp() {
+  // Drop --account: that flag makes boot open the Account window and return before
+  // any Studio/Arcade window is created, so after a successful sign-in it would
+  // leave the person staring at the window they just finished with.
+  const args = process.argv.slice(1).filter((a) => a !== "--account");
+  app.relaunch({ args });
+  app.quit(); // quit (not exit) so before-quit closes the daemon client cleanly
+}
+
+// promoteToCloud is the free → paid door. It registers this machine and uploads
+// the local YAML FIRST, and restarts into the cloud edition ONLY if that actually
+// succeeded. Booting into a cloud edition whose config never made it up would show
+// an empty app, which is indistinguishable from data loss.
+let promoting = false;
+async function promoteToCloud(status) {
+  const mode = await joinThenSync(status);
+  if (mode !== "api") {
+    promoting = false; // a later sign-in (or a reachable backend) can try again
+    setLicenseState({ signedIn: true, lic: status.lic, mode: "local" });
+    logLine("info", "promote: the backend didn't take the config — staying local for now");
+    return;
+  }
+  edition.switchTo(edition.CLOUD, {
+    lic: status.lic,
+    reason: "paid licence, config synced",
+    log: (m) => logLine("info", `edition: ${m}`),
+    relaunch: relaunchApp,
+  });
 }
 
 auth.on("change", (status) => {
   if (dc) dc.setToken(auth.token());
   toRenderer("auth:changed", status);
 
-  // Sign-in/out flips the compiled-backend switch; re-probe so dictation follows
-  // (joined → voice-dev; signed out → the local server picker).
   const transition = signedIn !== status.signedIn;
   signedIn = status.signedIn;
 
-  if (!status.signedIn) {
-    // A true→false transition here is the session LAPSING, not a sign-out click:
-    // lib/auth.js forces this state when a refresh is rejected (expired, licence
-    // pulled, or the token chain revoked after a reuse). Every cloud call will now
-    // fail, so ask for a sign-in once rather than letting each failure emit its
-    // own toast about a problem the user can't act on.
-    const lapsed = transition && !userSignedOut && cloudMode();
+  // The edition this licence is ENTITLED to, read live. This is the last live
+  // licence read in the app, and the only thing it is allowed to do is move us to
+  // the OTHER edition — by restart. It never changes behaviour in place.
+  const entitled = edition.entitledFrom(status);
+  const elog = (m) => logLine("info", `edition: ${m}`);
+
+  // ── free → paid: promote, then restart into the cloud edition ────────────────
+  if (entitled === edition.CLOUD && EDITION === edition.LOCAL) {
+    if (promoting) return; // token refreshes fire this repeatedly; one promote only
+    promoting = true;
+    setLicenseState({ signedIn: true, lic: status.lic, mode: "connecting" });
+    promoteToCloud(status).catch((e) => { promoting = false; logLine("err", `promote: ${e.message}`); });
+    return;
+  }
+
+  // ── paid → free: leave the cloud edition ────────────────────────────────────
+  if (entitled === edition.LOCAL && EDITION === edition.CLOUD) {
     apiMode = false;
     wasSignedIn = false;
-    setLicenseState({ signedIn: false, lic: "free", mode: "local" });
-    toRenderer("config:changed", { mode: "local" });
-    if (transition) startupProbe().catch(() => {});
-    if (lapsed) openAccount("expired");
+    setLicenseState({ signedIn: !!status.signedIn, lic: status.lic || "free", mode: "local" });
+    toRenderer("config:changed", { mode: "local", lic: status.lic || "free" });
+
+    // Restart ONLY for a deliberate sign-out, where the person just acted and
+    // expects the app to change.
+    if (userSignedOut) {
+      edition.switchTo(edition.LOCAL, { lic: "free", reason: "signed out", log: elog, relaunch: relaunchApp });
+      return;
+    }
+    // Everything else that lands here — a session lapsing, a licence pulled, or a
+    // 5xx from the identity service on a routine refresh (lib/auth.js forces
+    // signed-out on any non-ok response, not just a rejection) — must NOT yank a
+    // running app out from under them over what may be a transient server fault.
+    // Save the local edition for the next launch, say what happened, and let the
+    // next boot do the switch. Signing back in before then costs nothing: the
+    // saved edition simply goes back to cloud and nothing ever moved.
+    edition.prefer(edition.LOCAL, { lic: status.lic || "free", log: elog });
+    startupProbe().catch(() => {});
+    // Ask for a sign-in ONCE, rather than letting every failed cloud call emit its
+    // own toast about a problem the user can't act on.
+    if (!status.signedIn) openAccount("expired");
     return;
   }
+
+  // ── steady state: this process booted into the edition it should be in ──────
   if (transition) startupProbe().catch(() => {});
 
-  // API mode — and ALL product-API traffic — is gated on a QUALIFYING (paid)
-  // license, NOT merely being signed in. A Free user is known only by identity in
-  // Talkersoft ID; the product API tracks NOTHING for them — no device
-  // registration, no managed config sync. They stay fully local (YAML + local
-  // speech). This is why device registration lives below this gate, not above it.
-  // Free mode consumes nothing of ours, so none of this applies — no licence
-  // check, no device registration, no managed config.
-  if (!cloudMode()) {
-    apiMode = false;
-    setLicenseState({ signedIn: true, lic: status.lic || "free", mode: "local" });
+  if (EDITION === edition.LOCAL) {
+    // The free path — signed out, or signed in on the free plan. ALL product-API
+    // traffic is gated on a qualifying licence, not merely on being signed in: a
+    // free user is known only by identity in Talkersoft ID, and the product API
+    // tracks NOTHING for them. No device registration, no managed config sync.
+    setLicenseState({ signedIn: !!status.signedIn, lic: status.lic || "free", mode: "local" });
     toRenderer("config:changed", { mode: "local", lic: status.lic || "free" });
     return;
   }
 
-  const licensed = !!status.lic && status.lic !== "free";
-  if (!licensed) {
-    apiMode = false;
-    setLicenseState({ signedIn: true, lic: status.lic || "free", mode: "local" });
-    toRenderer("config:changed", { mode: "local", lic: status.lic || "free" });
-    return;
-  }
-
-  // Licensed (paid) only: this machine joins the fleet, then syncs.
+  // Cloud edition, licence still qualifying: this machine joins the fleet, then syncs.
   //
   // ORDER MATTERS. The backend imports a machine's YAML into a workspace of its
   // own, and refuses to import for a device it has never seen. Registration used
@@ -496,17 +608,17 @@ function muxPid() {
 }
 function reconcileMux() {
   const cur = muxPid(); if (!cur) return;            // no mux up yet → nothing to reconcile
-  const doc = readDoc();
-  const prev = String(doc.mux_id || "");
+  // Which mux is running, and which panes belong to it, are facts about THIS
+  // machine — device state, not account config.
+  const dev = store.device();
+  const prev = dev.muxId();
   if (prev === cur) return;                          // same mux → stored pane ids still valid
   // Only a KNOWN, different previous mux means the ids are stale. A first run with no
   // recorded mux just adopts the current one (live ids are still validated normally),
   // so we don't orphan panes already running in this mux.
-  let cleared = false;
-  if (prev && Array.isArray(doc.agents)) doc.agents.forEach((a) => { if (a.pane_id) { a.pane_id = 0; cleared = true; } });
-  doc.mux_id = cur;
-  writeDoc(doc);
-  logLine("info", `mux ${prev ? (cleared ? "changed → cleared stale pane ids" : "changed") : "baseline set"} (mux=${cur})`);
+  const cleared = prev ? dev.clearPanes() : 0;
+  dev.setMuxId(cur);
+  logLine("info", `mux ${prev ? (cleared ? `changed → cleared ${cleared} stale pane id(s)` : "changed") : "baseline set"} (mux=${cur})`);
 }
 // ── backend servers (multi-server, single-active) ──────────────────────────────--
 // The user can save several backend servers (name + url); exactly ONE is active at a
@@ -536,22 +648,23 @@ const LOCALHOST_DEFAULT = "http://localhost:9100";
 // from the yaml; the licence decides cloud vs this Mac.
 const backend = require("./lib/backend");
 
-// THE LICENCE DECIDES THE BACKEND. There is no setting, and nothing for a user to
-// pick — holding a paid licence IS the choice:
+// THE EDITION DECIDES THE BACKEND, and the edition was decided at boot.
 //
-//   signed out          → this Mac
-//   signed in, free     → this Mac (identical; we just know who they are)
-//   signed in, paid     → ours
+//   local edition → this Mac (signed out, or signed in on the free plan)
+//   cloud edition → ours
 //
-// Signing out therefore drops straight back to the local engine, which is always
-// there underneath. Which environment "ours" means lives in the yaml and is set by
-// us — a user should have to decompile to find a hostname.
-function paidLicence() {
-  try {
-    const st = auth.status();
-    return !!st.signedIn && !!st.lic && String(st.lic).toLowerCase() !== "free";
-  } catch { return false; }
-}
+// Holding a paid licence is still what earns the cloud edition — see
+// edition.entitledFrom in the auth handler. The difference is that the question is
+// answered ONCE, at a point where the answer is knowable, rather than re-asked at
+// runtime by callers who may be racing the session restore. That race is what
+// silently disabled dictation: this function used to read auth.status() live, and
+// during boot it answered "free" for a paid user.
+//
+// Signing out drops back to the local engine, which is always there underneath —
+// via a restart, not an in-place flip. Which environment "ours" means lives in
+// lib/backend.js and is set by us; a user should have to decompile to find a
+// hostname.
+function paidLicence() { return EDITION === edition.CLOUD; }
 function backendMode() { return paidLicence() ? "cloud" : "free"; }
 
 // Cloud is ours, so it requires an account. Free never does — this single
@@ -723,12 +836,12 @@ function applyProbe(probe) {
   broadcastDictation();
   // Availability DRIVES the daemon client, rather than a one-shot call at boot.
   //
-  // The boot probe runs before the stored session is restored, so a paid user
-  // looks unlicensed for a moment: no backend, dictation unavailable, and the
-  // single spawnGo() at startup bailed. When the licence then arrived and the
-  // re-probe succeeded, nothing started the client — so no hello was ever sent,
-  // the daemon never received a token, and every dictation came back
-  // "401 authentication required" from a request with no bearer on it.
+  // The original reason was a race: the boot probe ran before the session was
+  // restored, so a paid user looked unlicensed for a moment and the single
+  // spawnGo() at startup bailed with nothing to start it again. That race is gone
+  // — the edition is frozen before this runs, so the probe hits the right backend
+  // on the first try. This recovery stays for the case it should always have been
+  // for: a backend that simply wasn't up yet when we looked.
   if (dictationAvailable && !was) {
     logLine("info", "dictation became available — connecting the daemon");
     spawnGo();
@@ -740,8 +853,18 @@ function applyProbe(probe) {
 // No retries, no polling, fail-closed.
 async function startupProbe() {
   const url = loadApiUrl();
+  // No backend for this plan is a NORMAL state, not a failure: free-plan dictation
+  // is opt-in (it needs a speech server installed separately). Probing a blank url
+  // only produced an ERROR-level "no api_url", which surfaced as an alarming toast
+  // on every launch for a condition the user can't act on. Say nothing and mark
+  // dictation unavailable.
+  if (!url) {
+    logLine("info", "dictation not configured yet — no backend for this plan");
+    applyProbe({ ok: false, error: "not configured" });
+    return;
+  }
   const probe = await probeCapabilities(url);
-  logLine(probe.ok ? "info" : "err", `dictation probe ${url || "(blank)"} → ${probe.ok ? `asr:${probe.caps.asr}` : probe.error}`);
+  logLine(probe.ok ? "info" : "err", `dictation probe ${url} → ${probe.ok ? `asr:${probe.caps.asr}` : probe.error}`);
   applyProbe(probe);
 }
 function getDictation() { return { available: dictationAvailable, caps: lastCaps }; }
@@ -795,15 +918,13 @@ function normalizeGroup(g) {
   };
 }
 function loadGroups() {
-  const list = Array.isArray(readDoc().groups) ? readDoc().groups : [];
+  const list = store.groups();
   return list.map(normalizeGroup).sort((a, b) => a.order - b.order);
 }
 function saveGroups(groups) {
-  const doc = readDoc();
-  doc.groups = (groups || []).map(normalizeGroup);
-  writeDoc(doc);
-  schedulePush(); // mirror to the API when joined (no-op locally)
-  return loadGroups();
+  const next = (groups || []).map(normalizeGroup);
+  Promise.resolve(store.saveGroups(next)).catch((e) => logLine("err", `save groups: ${e.message}`));
+  return next.sort((a, b) => a.order - b.order);
 }
 
 // ── systems (machines that host agents; mock layer for future remote control) ──
@@ -818,14 +939,13 @@ function normalizeSystem(s) {
   };
 }
 function loadSystems() {
-  const list = Array.isArray(readDoc().systems) ? readDoc().systems : [];
+  const list = store.systems();
   return list.map(normalizeSystem).sort((a, b) => a.order - b.order);
 }
 function saveSystems(systems) {
   const doc = readDoc();
   doc.systems = (systems || []).map(normalizeSystem);
   writeDoc(doc);
-  schedulePush(); // mirror to the API when joined (no-op locally)
   return loadSystems();
 }
 // ── agent programs (the catalog of selectable agent harnesses) ────────────────
@@ -978,9 +1098,12 @@ function saveWezterm(s) {
   return loadWezterm();
 }
 
+// Agents come from the STORE, which is the YAML in the local edition and the API
+// in the cloud edition — decided once, in lib/store, from the frozen edition. This
+// used to read the YAML unconditionally, which is why an agent created in the web
+// console could never appear here however long you waited.
 function loadAgents() {
-  const doc = readDoc();
-  const list = Array.isArray(doc.agents) ? doc.agents : [];
+  const list = store.agents();
   // Stable sort by `order` so both Studio (agents:list) and the Arcade rail render
   // in the user's drag-and-drop order. Ties keep their original (insertion) order.
   return list.map(normalizeAgent).map((a, i) => ({ a, i })).sort((x, y) => (x.a.order - y.a.order) || (x.i - y.i)).map((x) => x.a);
@@ -998,12 +1121,14 @@ function sessionPersisted(sessionId) {
   } catch {}
   return false;
 }
+// Writes go to whichever store this edition uses. In the cloud edition the store
+// re-reads before it pushes, so an edit here can no longer overwrite something
+// created in the console since the last sync — the old path mirrored the STALE
+// local YAML up with a workspace-scoped delete.
 function saveAgents(agents) {
-  const doc = readDoc();
-  doc.agents = (agents || []).map(normalizeAgent);
-  writeDoc(doc);
-  schedulePush(); // mirror to the API when joined (no-op locally)
-  return loadAgents();
+  const next = (agents || []).map(normalizeAgent);
+  Promise.resolve(store.saveAgents(next)).catch((e) => logLine("err", `save agents: ${e.message}`));
+  return next.map((a, i) => ({ a, i })).sort((x, y) => (x.a.order - y.a.order) || (x.i - y.i)).map((x) => x.a);
 }
 // ── Go bridge ─────────────────────────────────────────────────────────────────
 // Daemon-mode client: one connection to the shared daemon, ensured (spawned by
@@ -2108,6 +2233,21 @@ function ensureLauncher() {
   } catch (e) { logLine("err", `launcher: ${e.message}`); }
 }
 
+// Cloud reads go stale the moment anything changes in the web console or on
+// another machine, and there is no push channel yet. So: refresh on the moment
+// that matters to a person — coming back to a window — with a slow poll
+// underneath for changes made while a window already had focus. A WebSocket
+// replaces the poll later; these triggers stay either way.
+//
+// The local edition has nothing to refresh FROM, so it wires none of this.
+function wireStoreRefresh() {
+  if (!store.isCloud()) return;
+  const refresh = () => { store.refresh().catch(() => {}); };
+  app.on("browser-window-focus", refresh);
+  const t = setInterval(refresh, 60_000);
+  if (t.unref) t.unref(); // never hold the process open for a poll
+}
+
 // Launched straight into the Arcade? The launcher's "Launch Arcade" passes
 // --arcade; DICTATE_ARCADE stays supported for back-compat.
 const wantArcade = () => process.argv.includes("--arcade") || process.env.DICTATE_ARCADE === "1";
@@ -2138,6 +2278,14 @@ app.whenReady().then(() => {
       return new Response("not found", { status: 404 });
     }
   });
+  // Upgrade path: pane ids / avatar paths / the mux id used to live INSIDE the
+  // config file. Lift them into device state before anything reads an agent, or
+  // every agent detaches from its running terminal exactly once.
+  try {
+    const legacy = readDoc();
+    store.device().adoptFrom(legacy.agents || []);
+    if (!store.device().muxId() && legacy.mux_id) store.device().setMuxId(String(legacy.mux_id));
+  } catch (e) { logLine("err", `device-state adopt: ${e.message}`); }
   ensureDefaultWezterm(); // seed default pop-out terminal size (80×26) if unset
   ensureAppSettings(); // seed the app block (warn_on_exit ON, sync tabs, compose split, summon hotkey)
   migrateLegacyConfig(); // tidy legacy YAML: fragments→dictation_options, drop claude/agent_programs
@@ -2182,7 +2330,16 @@ app.whenReady().then(() => {
   // Probe the backend first (populates lastCaps.auth_issuer), then try to restore
   // a saved session, then bring up the daemon (which the restored token rides via
   // the auth "change" → dc.setToken path).
-  startupProbe().finally(() => { auth.restore().finally(() => spawnGo()); });
+  startupProbe().finally(() => {
+    auth.restore().finally(() => {
+      spawnGo();
+      // Hydrate the account store. AFTER restore, so the cloud edition has a token
+      // to read with; locally it's a no-op. Not awaited — a slow or unreachable
+      // backend must never hold up a window, and the cache already drew one.
+      store.start().catch((e) => logLine("err", `store: ${e.message}`));
+    });
+  });
+  wireStoreRefresh();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 // A second launch routes here (single-instance) instead of starting a rival

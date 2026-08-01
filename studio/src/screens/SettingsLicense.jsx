@@ -19,11 +19,13 @@ const labelFor = (k) => FEATURE_LABELS[k] || k.replace(/_/g, " ").replace(/^./, 
 
 export function SettingsLicense() {
   const [lic, setLic] = useState(null);
+  const [ed, setEd] = useState(null);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
 
   const refresh = async () => {
     try { const r = await tester.licenseGet(); setLic(r || null); } catch { setLic(null); }
+    try { setEd(await tester.editionGet()); } catch { setEd(null); }
     setLoading(false);
   };
   useEffect(() => {
@@ -48,8 +50,53 @@ export function SettingsLicense() {
   const upgrade = l.upgrade || null;
   const gains = upgrade ? Object.keys(upgrade).filter((k) => upgrade[k] === "true" && ents[k] !== "true") : [];
 
+  // WHAT IS DRIVING THIS APP — stated plainly, above everything else. The old row
+  // said "connected", which described the session rather than where the agents on
+  // screen actually came from. Those are different questions, and confusing them
+  // is how the app spent a long time claiming to be API-driven while reading a
+  // local file.
+  const source = ed && ed.isCloud
+    ? {
+        icon: "☁️",
+        title: ed.workspaceName
+          ? `Your account is driving this app — workspace “${ed.workspaceName}”`
+          : "Your account is driving this app",
+        body: <>Agents and groups come from your account, not from this Mac — edits here are saved to your account and appear on your other devices.{" "}
+          {ed.macrosOnAccount
+            ? "Your macros are on your account too."
+            : "Your macros are still stored on this Mac; they move to your account once your backend has the macro tables."}</>,
+        note: ed.stale
+          ? (ed.error ? `Showing the last copy we had — can't reach your account right now (${ed.error}).` : "Loading from your account…")
+          : `${ed.counts.agents} agent${ed.counts.agents === 1 ? "" : "s"} · ${ed.counts.groups} group${ed.counts.groups === 1 ? "" : "s"} · ${ed.counts.commands} macro${ed.counts.commands === 1 ? "" : "s"}`,
+        warn: !!ed.stale,
+      }
+    : {
+        icon: "🖥️",
+        title: "This Mac is driving this app",
+        body: <>Agents, groups and macros live in a file on this machine. Nothing is read from or written to our servers.</>,
+        note: ed ? `${ed.counts.agents} agent${ed.counts.agents === 1 ? "" : "s"} · ${ed.counts.groups} group${ed.counts.groups === 1 ? "" : "s"} · ${ed.counts.commands} macro${ed.counts.commands === 1 ? "" : "s"}` : "",
+        warn: false,
+      };
+
   return (
     <div className="subpanel active">
+      {ed && (
+        <div className="disp-actions" style={{ marginTop: 0, borderTop: "none", paddingTop: 0 }}>
+          <div className="disp-act-row">
+            <div className="disp-act-icon">{source.icon}</div>
+            <div className="disp-act-main">
+              <div className="disp-act-name">
+                {source.title}{" "}
+                <span className={`badge ${source.warn ? "stop" : "run"}`}>{ed.isCloud ? "account" : "this Mac"}</span>
+              </div>
+              <div className="disp-act-sub">
+                {source.body}
+                {source.note ? <><br />{source.note}</> : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="disp-actions" style={{ marginTop: 0, borderTop: "none", paddingTop: 0 }}>
         <div className="disp-act-row">
           <div className="disp-act-icon">{l.paid ? "🎟️" : "○"}</div>
