@@ -1,6 +1,6 @@
-# agent-arcade-free — direction (frozen 2026-08-01)
+# agent-arcade-client-free — direction (frozen 2026-08-01)
 
-This repo (formerly `agent-arcade`) is the **free edition** of Agent Arcade, and
+This repo (formerly `agent-arcade`, then `agent-arcade-client-free`) is the **free edition** of Agent Arcade, and
 it is deliberately **frozen** at v0.9.0 while the cloud product moves to a clean
 slate in `agent-arcade-client`.
 
